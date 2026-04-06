@@ -37,14 +37,15 @@ jobs:
             echo "Pulling updated Docker images..."
             # Run all docker compose commands from the project root so that Docker Compose
             # picks up the .env file at /opt/project-sauron/.env (not monitoring/.env)
-            docker compose -f monitoring/docker-compose.yml pull
+            docker compose -f monitoring/docker-compose.yml -f monitoring/docker-compose.monitoring.yml pull
 
             echo "Restarting services with zero-downtime..."
-            docker compose -f monitoring/docker-compose.yml up -d --remove-orphans
+            # Include the monitoring override to ensure Alloy is started alongside the main stack
+            docker compose -f monitoring/docker-compose.yml -f monitoring/docker-compose.monitoring.yml up -d --remove-orphans
 
             echo "Checking container health..."
             sleep 10
-            docker compose -f monitoring/docker-compose.yml ps
+            docker compose -f monitoring/docker-compose.yml -f monitoring/docker-compose.monitoring.yml ps
 
             echo "Reloading Prometheus config..."
             curl -s -X POST http://localhost:9090/-/reload || echo "Prometheus reload failed (may not be running yet)"

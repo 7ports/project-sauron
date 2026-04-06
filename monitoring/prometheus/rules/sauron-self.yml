@@ -1,0 +1,75 @@
+# sauron-self.yml
+# Self-monitoring alert rules for the Sauron observability hub.
+# Covers: core scrape target health, EC2 host resources (memory, disk, CPU),
+# Prometheus target availability, and Loki ingestion errors.
+# Loaded automatically via rule_files glob: /etc/prometheus/rules/*.yml
+
+groups:
+  - name: sauron-self
+    rules:
+
+      # ── Core service availability ─────────────────────────────────────────
+
+      - alert: SauronContainerDown
+        expr: up{job=~"prometheus|loki|node"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Sauron core service {{ $labels.job }} is not scraping"
+          description: "Prometheus scrape target job={{ $labels.job }} instance={{ $labels.instance }} has been unreachable for 2 minutes."
+
+      # ── EC2 host resources ────────────────────────────────────────────────
+
+      - alert: SauronHighMemoryUsage
+        expr: node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes < 0.15
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "EC2 instance memory usage above 85%"
+          description: "Available memory on {{ $labels.instance }} is {{ $value | printf \"%.1f%%\" }} of total (threshold: 15% free)."
+
+      - alert: SauronDiskSpaceLow
+        expr: >
+          node_filesystem_avail_bytes{mountpoint="/",fstype!="tmpfs"}
+          / node_filesystem_size_bytes{mountpoint="/",fstype!="tmpfs"}
+          < 0.20
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Disk space below 20% on sauron-ec2"
+          description: "Root filesystem on {{ $labels.instance }} has {{ $value | printf \"%.1f%%\" }} space remaining (threshold: 20% free)."
+
+      - alert: SauronHighCPU
+        expr: >
+          100 - (avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 85
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "CPU usage above 85% for 10 minutes on sauron-ec2"
+          description: "CPU utilisation on {{ $labels.instance }} is {{ $value | printf \"%.1f%%\" }} (threshold: 85%)."
+
+      # ── Prometheus target health ──────────────────────────────────────────
+
+      - alert: SauronPrometheusTargetDown
+        expr: up == 0
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Prometheus target {{ $labels.job }} / {{ $labels.instance }} is down"
+          description: "Scrape target job={{ $labels.job }} instance={{ $labels.instance }} has been unreachable for 3 minutes."
+
+      # ── Loki ingestion health ─────────────────────────────────────────────
+
+      - alert: SauronLokiIngestionError
+        expr: rate(loki_request_duration_seconds_count{status_code=~"5.."}[5m]) > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Loki is returning 5xx errors"
+          description: "Loki route={{ $labels.route }} is producing 5xx responses at {{ $value | printf \"%.2f\" }} req/s."

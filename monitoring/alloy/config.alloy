@@ -1,0 +1,152 @@
+// =============================================================================
+// Grafana Alloy — Self-Monitoring Config for Project Sauron
+// =============================================================================
+//
+// Purpose:
+//   This is the Alloy client configuration that runs ON the Sauron EC2 instance
+//   to ship Sauron's own metrics and logs back to itself (self-monitoring).
+//   It collects host-level metrics and container logs, then pushes them to the
+//   Prometheus remote-write endpoint and Loki push endpoint exposed by nginx.
+//
+// Required environment variables (set in .env on EC2, or Docker Compose env):
+//   SAURON_METRICS_URL          — Prometheus remote-write URL
+//                                 e.g. https://sauron.7ports.ca/metrics/push
+//   SAURON_LOKI_URL             — Loki push URL
+//                                 e.g. https://sauron.7ports.ca/loki/api/v1/push
+//   PUSH_BEARER_TOKEN_SAURON    — Bearer token for authenticating push requests
+//                                 (must match the token nginx validates)
+//   CLIENT_NAME                 — Label identifying this client in Sauron
+//                                 e.g. sauron
+//   CLIENT_ENV                  — Label identifying the environment
+//                                 e.g. production
+//
+// How it is used:
+//   Run as a Docker container on the monitoring network alongside Prometheus,
+//   Grafana, Loki, etc. The compose override (monitoring/docker-compose.alloy.yml)
+//   defines the container, mounts /proc, /sys, /var/log, and the Docker socket,
+//   and injects the env vars above.
+//
+// Syntax: River (Alloy's native config language — NOT YAML, NOT HCL)
+// =============================================================================
+
+
+// ---------------------------------------------------------------------------
+// 1. Host metrics via built-in unix exporter
+//    Collects CPU, memory, disk, network, filesystem stats from the host.
+//    The container must be run with /proc and /sys mounted (see compose override).
+// ---------------------------------------------------------------------------
+prometheus.exporter.unix "host" {
+  // Exclude virtual/container filesystems to avoid noise
+  filesystem {
+    mount_points_exclude = "^/(sys|proc|dev|host|etc|run/secrets)($|/)"
+    fs_types_exclude     = "^(autofs|binfmt_misc|bpf|cgroup2?|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|iso9660|mqueue|nsfs|overlay|proc|procfs|pstore|rpc_pipefs|securityfs|selinuxfs|squashfs|sysfs|tracefs)$"
+  }
+}
+
+
+// ---------------------------------------------------------------------------
+// 2. Scrape host exporter + local stack exporters
+//    Collects metrics from: unix exporter (host), node-exporter, blackbox-exporter,
+//    loki, and prometheus itself — all reachable via Docker networking.
+// ---------------------------------------------------------------------------
+prometheus.scrape "local_exporters" {
+  // Include the built-in unix exporter's output
+  targets = concat(
+    prometheus.exporter.unix.host.targets,
+    [
+      {"__address__" = "node-exporter:9100"},
+      {"__address__" = "blackbox-exporter:9115", "__metrics_path__" = "/metrics"},
+      {"__address__" = "loki:3100",              "__metrics_path__" = "/metrics"},
+      {"__address__" = "prometheus:9090",         "__metrics_path__" = "/metrics"},
+    ],
+  )
+
+  // Attach external labels so every metric is identifiable in the remote store
+  external_labels = {
+    client = env("CLIENT_NAME"),
+    env    = env("CLIENT_ENV"),
+  }
+
+  scrape_interval = "60s"
+  scrape_timeout  = "10s"
+
+  forward_to = [prometheus.remote_write.sauron.receiver]
+}
+
+
+// ---------------------------------------------------------------------------
+// 3. Remote-write metrics to Sauron's Prometheus endpoint
+//    URL and bearer token are injected at runtime via env vars — never hardcoded.
+// ---------------------------------------------------------------------------
+prometheus.remote_write "sauron" {
+  endpoint {
+    url = env("SAURON_METRICS_URL")
+
+    bearer_token = env("PUSH_BEARER_TOKEN_SAURON")
+
+    // Queue config tuned for bursty metric writes on a single-node stack
+    queue_config {
+      capacity              = 10000
+      max_samples_per_send  = 2000
+    }
+  }
+}
+
+
+// ---------------------------------------------------------------------------
+// 4. System log collection from /var/log
+//    Tails all *.log files on the host (mounted into the container).
+// ---------------------------------------------------------------------------
+loki.source.file "system_logs" {
+  targets = [
+    {__path__ = "/var/log/*.log"},
+  ]
+
+  labels = {
+    job    = "system_logs",
+    client = env("CLIENT_NAME"),
+    env    = env("CLIENT_ENV"),
+  }
+
+  forward_to = [loki.write.sauron.receiver]
+}
+
+
+// ---------------------------------------------------------------------------
+// 5. Container log collection via Docker socket
+//    Discovers all running containers and streams their stdout/stderr logs.
+//    Requires the Docker socket to be mounted: /var/run/docker.sock
+// ---------------------------------------------------------------------------
+discovery.docker "containers" {
+  host = "unix:///var/run/docker.sock"
+}
+
+loki.source.docker "container_logs" {
+  host       = "unix:///var/run/docker.sock"
+  targets    = discovery.docker.containers.targets
+  forward_to = [loki.write.sauron.receiver]
+
+  labels = {
+    job    = "docker",
+    client = env("CLIENT_NAME"),
+    env    = env("CLIENT_ENV"),
+  }
+}
+
+
+// ---------------------------------------------------------------------------
+// 6. Write logs to Sauron's Loki endpoint
+//    URL and bearer token are injected at runtime via env vars — never hardcoded.
+// ---------------------------------------------------------------------------
+loki.write "sauron" {
+  endpoint {
+    url = env("SAURON_LOKI_URL")
+
+    bearer_token = env("PUSH_BEARER_TOKEN_SAURON")
+  }
+
+  external_labels = {
+    client = env("CLIENT_NAME"),
+    env    = env("CLIENT_ENV"),
+  }
+}

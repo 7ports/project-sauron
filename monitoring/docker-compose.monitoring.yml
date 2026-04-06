@@ -1,0 +1,61 @@
+# docker-compose.monitoring.yml — Alloy self-monitoring override
+#
+# PURPOSE:
+#   Adds the Grafana Alloy agent to the Sauron observability stack.
+#   Alloy ships host metrics, container logs, and traces to the Sauron
+#   Prometheus + Loki endpoints defined in alloy/config.alloy.
+#
+# USAGE (always run from the project root /opt/project-sauron):
+#   docker compose \
+#     -f monitoring/docker-compose.yml \
+#     -f monitoring/docker-compose.monitoring.yml \
+#     up -d
+#
+# REQUIRED ENV VARS (set in /opt/project-sauron/.env on the host):
+#   PUSH_BEARER_TOKEN_SAURON  — Bearer token for authenticating pushes to Sauron
+#   SAURON_METRICS_URL        — Prometheus remote-write endpoint (e.g. https://sauron.7ports.ca/prometheus/api/v1/write)
+#   SAURON_LOKI_URL           — Loki push endpoint (e.g. https://sauron.7ports.ca/loki/api/v1/push)
+#   CLIENT_NAME               — Identifier for this monitored project (e.g. sauron, hammer, alexandria)
+#   CLIENT_ENV                — Deployment environment label (e.g. production, staging)
+#
+# CLIENT ONBOARDING:
+#   This file is the canonical template that client projects copy to onboard
+#   themselves into the Sauron monitoring platform. Each client copies this
+#   file alongside their own docker-compose.yml, fills in the env vars above,
+#   and runs the combined compose command to attach Alloy to their stack.
+
+services:
+  alloy:
+    image: grafana/alloy:latest
+    container_name: alloy
+    restart: unless-stopped
+    command: run --stability.level=generally-available /etc/alloy/config.alloy
+    volumes:
+      # Alloy configuration (relative to monitoring/ dir, where this file lives)
+      - ./alloy/config.alloy:/etc/alloy/config.alloy:ro
+      # System logs — read-only; Alloy tails these for log forwarding to Loki
+      - /var/log:/var/log:ro
+      # Docker socket — read-only; used for container log discovery and collection
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      # Auth token for Sauron push endpoints (nginx validates this as Bearer token)
+      - PUSH_BEARER_TOKEN_SAURON=${PUSH_BEARER_TOKEN_SAURON}
+      # Prometheus remote-write URL on the Sauron instance
+      - SAURON_METRICS_URL=${SAURON_METRICS_URL}
+      # Loki push URL on the Sauron instance
+      - SAURON_LOKI_URL=${SAURON_LOKI_URL}
+      # Labels applied to all metrics/logs shipped by this Alloy instance
+      - CLIENT_NAME=${CLIENT_NAME}
+      - CLIENT_ENV=${CLIENT_ENV}
+    mem_limit: 256m
+    networks:
+      - monitoring
+
+# Declare the monitoring network as external so this override file does not
+# attempt to create a second network. The main docker-compose.yml creates it
+# under the project name "project-sauron" (the repo root directory name),
+# resulting in the Docker network named "project-sauron_monitoring".
+networks:
+  monitoring:
+    external: true
+    name: project-sauron_monitoring
