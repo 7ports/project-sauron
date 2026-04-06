@@ -139,7 +139,13 @@ volumes:
   prometheus_data:
   grafana_data:
   loki_data:
+  # certbot_certs must be bootstrapped before first `docker compose up` using:
+  #   docker run --rm -p 80:80 -v monitoring_certbot_certs:/etc/letsencrypt \
+  #     certbot/certbot certonly --standalone -d <DOMAIN> --email <EMAIL> --agree-tos --non-interactive
+  # Marked external so compose does not try to recreate it after the bootstrap step.
   certbot_certs:
+    external: true
+    name: monitoring_certbot_certs  # created by the bootstrap certbot run (see comment above)
   certbot_webroot:
 
 networks:

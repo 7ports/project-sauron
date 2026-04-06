@@ -35,15 +35,16 @@ jobs:
             git reset --hard origin/main
 
             echo "Pulling updated Docker images..."
-            cd monitoring
-            docker compose pull
+            # Run all docker compose commands from the project root so that Docker Compose
+            # picks up the .env file at /opt/project-sauron/.env (not monitoring/.env)
+            docker compose -f monitoring/docker-compose.yml pull
 
             echo "Restarting services with zero-downtime..."
-            docker compose up -d --remove-orphans
+            docker compose -f monitoring/docker-compose.yml up -d --remove-orphans
 
             echo "Checking container health..."
             sleep 10
-            docker compose ps
+            docker compose -f monitoring/docker-compose.yml ps
 
             echo "Reloading Prometheus config..."
             curl -s -X POST http://localhost:9090/-/reload || echo "Prometheus reload failed (may not be running yet)"
