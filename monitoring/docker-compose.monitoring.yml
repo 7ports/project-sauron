@@ -13,10 +13,10 @@
 #
 # REQUIRED ENV VARS (set in /opt/project-sauron/.env on the host):
 #   PUSH_BEARER_TOKEN_SAURON  — Bearer token for authenticating pushes to Sauron
-#   SAURON_METRICS_URL        — Prometheus remote-write endpoint
-#   SAURON_LOKI_URL           — Loki push endpoint
-#   CLIENT_NAME               — Identifier for this monitored project (e.g. sauron)
-#   CLIENT_ENV                — Deployment environment label (e.g. production)
+#   SAURON_METRICS_URL        — Prometheus remote-write endpoint (e.g. https://sauron.7ports.ca/prometheus/api/v1/write)
+#   SAURON_LOKI_URL           — Loki push endpoint (e.g. https://sauron.7ports.ca/loki/api/v1/push)
+#   CLIENT_NAME               — Identifier for this monitored project (e.g. sauron, hammer, alexandria)
+#   CLIENT_ENV                — Deployment environment label (e.g. production, staging)
 #
 # CLIENT ONBOARDING:
 #   This file is the canonical template that client projects copy to onboard
@@ -31,7 +31,7 @@ services:
     restart: unless-stopped
     command: run --stability.level=generally-available /etc/alloy/config.alloy
     volumes:
-      # Alloy configuration — path is relative to this file's location (monitoring/)
+      # Alloy configuration (relative to monitoring/ dir, where this file lives)
       - ./alloy/config.alloy:/etc/alloy/config.alloy:ro
       # System logs — read-only; Alloy tails these for log forwarding to Loki
       - /var/log:/var/log:ro
@@ -51,8 +51,11 @@ services:
     networks:
       - monitoring
 
-# NOTE: No 'networks' top-level block here.
-# When this file is merged with monitoring/docker-compose.yml via multiple -f flags,
-# the base file defines and creates the 'monitoring' network. Declaring it as
-# external:true here would conflict with the base file's network definition.
-# The alloy service above connects to 'monitoring' which the base file owns.
+# Declare the monitoring network as external so this override file does not
+# attempt to create a second network. The main docker-compose.yml creates it
+# under the project name "project-sauron" (the repo root directory name),
+# resulting in the Docker network named "project-sauron_monitoring".
+networks:
+  monitoring:
+    external: true
+    name: project-sauron_monitoring

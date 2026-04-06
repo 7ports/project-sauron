@@ -22,8 +22,8 @@
 //
 // How it is used:
 //   Run as a Docker container on the monitoring network alongside Prometheus,
-//   Grafana, Loki, etc. The compose override (monitoring/docker-compose.alloy.yml)
-//   defines the container, mounts /proc, /sys, /var/log, and the Docker socket,
+//   Grafana, Loki, etc. The compose override (monitoring/docker-compose.monitoring.yml)
+//   defines the container, mounts /var/log and the Docker socket,
 //   and injects the env vars above.
 //
 // Syntax: River (Alloy's native config language — NOT YAML, NOT HCL)
@@ -33,7 +33,6 @@
 // ---------------------------------------------------------------------------
 // 1. Host metrics via built-in unix exporter
 //    Collects CPU, memory, disk, network, filesystem stats from the host.
-//    The container must be run with /proc and /sys mounted (see compose override).
 // ---------------------------------------------------------------------------
 prometheus.exporter.unix "host" {
   // Exclude virtual/container filesystems to avoid noise
@@ -50,7 +49,7 @@ prometheus.exporter.unix "host" {
 //    loki, and prometheus itself — all reachable via Docker networking.
 // ---------------------------------------------------------------------------
 prometheus.scrape "local_exporters" {
-  // Include the built-in unix exporter's output
+  // Include the built-in unix exporter's output plus other local services
   targets = concat(
     prometheus.exporter.unix.host.targets,
     [
@@ -61,14 +60,27 @@ prometheus.scrape "local_exporters" {
     ],
   )
 
-  // Attach external labels so every metric is identifiable in the remote store
-  external_labels = {
-    client = env("CLIENT_NAME"),
-    env    = env("CLIENT_ENV"),
-  }
-
   scrape_interval = "60s"
   scrape_timeout  = "10s"
+
+  forward_to = [prometheus.relabel.add_client_labels.receiver]
+}
+
+
+// ---------------------------------------------------------------------------
+// 2b. Add client/env labels to all scraped metrics via relabeling
+//     This is the correct River pattern for attaching external labels to metrics.
+// ---------------------------------------------------------------------------
+prometheus.relabel "add_client_labels" {
+  rule {
+    target_label = "client"
+    replacement  = env("CLIENT_NAME")
+  }
+
+  rule {
+    target_label = "env"
+    replacement  = env("CLIENT_ENV")
+  }
 
   forward_to = [prometheus.remote_write.sauron.receiver]
 }
@@ -95,20 +107,15 @@ prometheus.remote_write "sauron" {
 
 // ---------------------------------------------------------------------------
 // 4. System log collection from /var/log
-//    Tails all *.log files on the host (mounted into the container).
+//    Tails all *.log files on the host (mounted into the container read-only).
+//    Labels are added via loki.relabel since env() cannot be used in target maps.
 // ---------------------------------------------------------------------------
 loki.source.file "system_logs" {
   targets = [
-    {__path__ = "/var/log/*.log"},
+    {__path__ = "/var/log/*.log", job = "system_logs"},
   ]
 
-  labels = {
-    job    = "system_logs",
-    client = env("CLIENT_NAME"),
-    env    = env("CLIENT_ENV"),
-  }
-
-  forward_to = [loki.write.sauron.receiver]
+  forward_to = [loki.relabel.add_log_labels.receiver]
 }
 
 
@@ -124,13 +131,26 @@ discovery.docker "containers" {
 loki.source.docker "container_logs" {
   host       = "unix:///var/run/docker.sock"
   targets    = discovery.docker.containers.targets
-  forward_to = [loki.write.sauron.receiver]
+  forward_to = [loki.relabel.add_log_labels.receiver]
+}
 
-  labels = {
-    job    = "docker",
-    client = env("CLIENT_NAME"),
-    env    = env("CLIENT_ENV"),
+
+// ---------------------------------------------------------------------------
+// 5b. Add client/env labels to all log streams via relabeling
+//     Shared by both system_logs and container_logs sources.
+// ---------------------------------------------------------------------------
+loki.relabel "add_log_labels" {
+  rule {
+    target_label = "client"
+    replacement  = env("CLIENT_NAME")
   }
+
+  rule {
+    target_label = "env"
+    replacement  = env("CLIENT_ENV")
+  }
+
+  forward_to = [loki.write.sauron.receiver]
 }
 
 
