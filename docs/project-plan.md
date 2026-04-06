@@ -32,7 +32,8 @@ This plan covers two complementary projects that together form a personal observ
 | Loki storage | **Local filesystem** | t3.small has 20GB gp3 volume. With 7-day log retention and personal project volumes (<100MB/day), local storage is sufficient. No S3 cost or complexity. | S3: better for production, unnecessary here. |
 | Pushgateway | **Included** | Handles metrics from ephemeral/serverless jobs (Cloudflare Workers, Lambda invocations, cron scripts) that can't be scraped. Standard Prometheus pattern. | Not included: would leave serverless metrics with no path to Sauron. |
 | Distributed tracing | **Deferred** | Tempo/Jaeger add 512MB+ RAM overhead. Personal projects rarely have >2 internal service hops. Revisit if any monitored project spans multiple services with latency budgets. | Tempo (Grafana-native): good fit but memory cost not justified yet. |
-| DNS | **Route53 A record via Terraform** | Existing `7ports.ca` hosted zone in same AWS account. IaC for repeatability. | Manual console: not repeatable. Cloudflare DNS: fine but adds another provider. |
+| DNS | **Route53 hosted zone + A record via Terraform** | `7ports.ca` has no Route53 hosted zone (confirmed via AWS research — only `yyz.live` exists). Terraform creates `aws_route53_zone.root` for `7ports.ca`, outputs NS records for registrar update, then creates `sauron.7ports.ca` A record. IaC for repeatability. **Migration note:** WordPress site on Lightsail also uses `7ports.ca`; its apex/www records must be added to the new Route53 zone before nameserver migration at the registrar. | Manual console: not repeatable. Cloudflare DNS: fine but adds another provider. |
+| Bearer token model | **One token per client** | Per-client tokens allow revoking one client's access without affecting others. Helldiver generates and stores tokens during onboarding. | Shared token: simpler but one compromised client exposes all. |
 | Helldiver inheritance model | **Fork Voltron scaffold** | Helldiver inherits Dockerfile.voltron, voltron-run.sh, Alexandria integration, auto-update hook, and reflection pipeline. Agent team is domain-specific (observability) but uses identical orchestration. | Standalone repo with no Voltron infrastructure: loses agent orchestration, Alexandria knowledge, reflection pipeline. |
 
 ---
@@ -382,14 +383,34 @@ If any required check fails: returns structured error list to the calling scrum-
 
 ## Phase 0: Manual Prerequisites
 
-**Goal:** Establish the infrastructure and credentials that automated agents cannot create.
+**Goal:** Establish the infrastructure, credentials, and DNS foundation that automated agents cannot create.
 
 **Deliverables:**
-- EC2 instance provisioned via `terraform apply` (using existing `infrastructure/terraform/`)
-- Elastic IP assigned and noted
-- GitHub Actions secrets added: `EC2_HOST`, `EC2_USER`, `EC2_SSH_KEY`, `EC2_PUBLIC_IP`, `GRAFANA_ADMIN_PASSWORD`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`
-- Bearer token generated for push endpoint: `PUSH_BEARER_TOKEN` (added to EC2 `.env` and GitHub secrets)
-- Domain delegation confirmed: `sauron.7ports.ca` will be an A record pointing to EC2 Elastic IP
+
+1. **Terraform: Route53 hosted zone for `7ports.ca`** — `aws_route53_zone.root` resource added to `infrastructure/terraform/main.tf` (Phase 1 devops-engineer task, but listed here as a prerequisite step because the NS records must be updated at the registrar before Phase 5 DNS works)
+
+2. **EC2 instance provisioned** via `terraform apply` (using existing `infrastructure/terraform/`)
+   - Elastic IP assigned and noted as `EC2_PUBLIC_IP`
+
+3. **Route53 zone setup (manual sequence):**
+   a. Run `terraform apply` — this creates the `7ports.ca` hosted zone and outputs 4 NS records
+   b. **Identify WordPress Lightsail static IP:** Go to AWS Console → Lightsail → Static IPs, note the IP attached to the WordPress instance
+   c. **Migrate DNS records to Route53 (before nameserver update):**
+      - Add A record: `7ports.ca` → Lightsail static IP (preserves WordPress apex)
+      - Add A record: `www.7ports.ca` → Lightsail static IP (or CNAME if WordPress uses `www.`)
+      - Add any other records from the current registrar (MX, TXT, etc.) to Route53
+   d. **Update nameservers at registrar:** Point `7ports.ca` to the 4 Route53 NS records from `terraform output`
+   e. Allow 24–48h for propagation; verify WordPress still loads at `7ports.ca` before proceeding
+
+4. **GitHub Actions secrets added** to `7ports/project-sauron` repo:
+   - `EC2_HOST` — EC2 public DNS or IP
+   - `EC2_USER` — `ec2-user`
+   - `EC2_SSH_KEY` — private key matching the `ec2_public_key` tfvar
+   - `EC2_PUBLIC_IP` — Elastic IP
+   - `GRAFANA_ADMIN_PASSWORD`
+   - `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_REGION`
+
+5. **Per-client bearer tokens:** Generate one unique token per client project using `openssl rand -base64 32`. Store in EC2 `.env` as `PUSH_BEARER_TOKEN_<CLIENT_NAME>` and in GitHub secrets for CI use. Initial token for sauron self-monitoring: `PUSH_BEARER_TOKEN_SAURON`.
 
 **Agent Assignments:** None — all manual steps by Rajesh.
 
@@ -397,8 +418,11 @@ If any required check fails: returns structured error list to the calling scrum-
 
 **Definition of Done:**
 - `terraform output elastic_ip` returns a stable IP
+- `terraform output route53_ns_records` returns 4 NS records
 - SSH to EC2 as `ec2-user` succeeds
 - GitHub Actions secrets are set in the `7ports/project-sauron` repo
+- WordPress loads at `https://7ports.ca` after nameserver migration (verify before Phase 5)
+- `dig NS 7ports.ca` returns Route53 nameservers
 
 ---
 
@@ -437,11 +461,25 @@ If any required check fails: returns structured error list to the calling scrum-
 
 7. **`monitoring/grafana/provisioning/grafana.ini`** (or env vars) — update `GF_SERVER_ROOT_URL` to `https://sauron.7ports.ca` (can stay as env var for now, updated in Phase 5)
 
-8. **`infrastructure/terraform/main.tf`** — add security group ingress rules for `:80` and `:443`; add Route53 A record resource (with variable to toggle on/off until Phase 5)
+8. **`infrastructure/terraform/main.tf`** — add:
+   - Security group ingress rules for `:80` and `:443`
+   - `aws_route53_zone.root` resource for `7ports.ca` (creates the zone; NS records output via `outputs.tf`)
+   - `aws_route53_record.sauron` for `sauron.7ports.ca` → Elastic IP (with `enable_dns` toggle variable, defaults to `false` until Phase 5)
+   - `aws_route53_record.wordpress_apex` for `7ports.ca` → Lightsail static IP
+   - `aws_route53_record.wordpress_www` for `www.7ports.ca` → Lightsail static IP
+   - `outputs.tf`: add `route53_ns_records` output (the 4 NS records to set at the registrar)
 
-9. **`.env.example`** — add `PUSH_BEARER_TOKEN`, `LOKI_RETENTION_HOURS`, `DOMAIN` variables
+9. **`.env.example`** — add:
+   - `PUSH_BEARER_TOKEN_<CLIENT_NAME>` (one per client — pattern, not a literal variable)
+   - `LOKI_RETENTION_HOURS=168`
+   - `DOMAIN=your.domain.com`
+   - `CERTBOT_EMAIL=your@email.com`
+
+10. **`monitoring/nginx/nginx.conf`** — use `$DOMAIN` env variable in `server_name` directive (nginx will substitute from Docker env)
 
 **Agent Assignments:** `devops-engineer`
+
+**Certbot email:** `raj@7ports.ca` — pass as `CERTBOT_EMAIL` env var in `.env`; certbot command in certbot service: `certbot certonly --webroot -w /var/www/certbot -d ${DOMAIN} --email ${CERTBOT_EMAIL} --agree-tos --non-interactive`
 
 **Dependencies:** Phase 0 complete (EC2 running, secrets set).
 
@@ -546,7 +584,10 @@ If any required check fails: returns structured error list to the calling scrum-
    - Each agent file contains: role description, mandatory first steps (Alexandria), input/output contract, step-by-step process, handoff instructions, definition of done, error handling
    - Agents reference the canonical Alloy config from Phase 3 as their template source
 
-2. **Test onboarding run** — Helldiver's scrum-master coordinates agents to onboard a second real project (e.g., a personal API or portfolio site)
+2. **Test onboarding runs** — Helldiver's scrum-master coordinates agents to onboard two real projects:
+   - **Test 1:** `7ports/project-hammer` — Cloudflare Workers + S3/CloudFront static site (ferries.yyz.live). Tests serverless/static path: Blackbox probing + Pushgateway pattern.
+   - **Test 2:** `7ports/project-alexandria` — Node.js MCP server (stdio transport, no HTTP). Tests the "no scrape endpoint" path: GitHub Pages HTTP probing only + Alloy for host metrics if deployed on EC2.
+   - Both tests must complete autonomously end-to-end before Phase 4 is marked done.
 
 3. **Generated artifacts committed** to `project-sauron`:
    - `monitoring/prometheus/rules/<test-client>.yml`
@@ -585,9 +626,11 @@ If any required check fails: returns structured error list to the calling scrum-
 
 **Deliverables:**
 
-1. **Route53 A record** via `infrastructure/terraform/main.tf`:
-   - `aws_route53_record.sauron` → `sauron.7ports.ca` → EC2 Elastic IP
-   - Toggle variable `enable_dns = true` added to `variables.tf`
+1. **Route53 A record activation** via `infrastructure/terraform/main.tf`:
+   - Set `enable_dns = true` in `terraform.tfvars` to activate `aws_route53_record.sauron` (the record was defined in Phase 1 but toggled off)
+   - At this point `7ports.ca` nameservers must already point to Route53 (confirmed in Phase 0 step 3d)
+   - Run `terraform apply` — `sauron.7ports.ca` A record goes live immediately
+   - Confirm with `dig A sauron.7ports.ca` returning EC2 Elastic IP
 
 2. **nginx config updated** for `sauron.7ports.ca`:
    - `server_name sauron.7ports.ca`
@@ -623,14 +666,19 @@ If any required check fails: returns structured error list to the calling scrum-
 
 ## Open Questions
 
-| # | Question | Impact | Recommended Default |
-|---|---|---|---|
-| 1 | **Loki vs VictoriaLogs memory risk:** t3.small has 2GB RAM. With Loki at `mem_limit: 400m` plus Prometheus (~200MB), Grafana (~200MB), nginx (~20MB), exporters (~100MB), total ~920MB — leaves ~1GB headroom. Is that comfortable enough, or should we swap to VictoriaLogs (50–150MB, saves ~300MB) despite requiring a community plugin? | Stack choice for Phase 1 | Proceed with Loki; monitor `docker stats` after Phase 1 deployment and revisit if headroom < 500MB |
-| 2 | **Tailscale vs HTTPS+token for dev machines:** HTTPS+Bearer is simpler but less secure than Tailscale WireGuard mesh. Is installing Tailscale on dev machines acceptable? | Security model | HTTPS+token (simpler, no VPN dependency) |
-| 3 | **Push token strategy:** One shared `PUSH_BEARER_TOKEN` for all clients, or one token per client? Per-client is more secure (revoke one without affecting others) but requires Helldiver to generate and store tokens. | Helldiver complexity | Start with one shared token; upgrade to per-client in a future Helldiver iteration |
-| 4 | **Log retention (7 days):** Is 7-day log retention sufficient, or should it be longer? Loki filesystem storage on 20GB gp3 volume. | Storage planning | 7 days default; Helldiver should document retention in onboarding runbook |
-| 5 | **Second test project for Phase 4:** Which project should Helldiver use as its first real onboarding target? Needs to be a real repo with actual logs and metrics. | Phase 4 scope | Rajesh to nominate a project before Phase 4 begins |
-| 6 | **Alertmanager:** Alert rules are defined but no Alertmanager is configured. Should Phase 1 include Alertmanager with email/PagerDuty, or keep alerts as Grafana alerting? | Notification model | Use Grafana Alerting (built-in, no extra container); add Alertmanager only if PagerDuty/OpsGenie routing is needed |
+All open questions resolved (2026-04-06).
+
+| # | Question | Resolution |
+|---|---|---|
+| 1 | **Loki vs VictoriaLogs memory risk** | ✅ **Proceed with Loki** (`mem_limit: 400m`). Monitor `docker stats` after Phase 1 deployment; swap to VictoriaLogs only if headroom < 500MB. |
+| 2 | **Tailscale vs HTTPS+token** | ✅ **HTTPS+Bearer token** — simpler, no VPN dependency. |
+| 3 | **Push token strategy** | ✅ **One token per client** — more secure; Helldiver generates tokens during onboarding. Revoke individual clients without affecting others. |
+| 4 | **Log retention** | ✅ **7 days default** (`LOKI_RETENTION_HOURS=168`). Helldiver documents retention per client in onboarding runbook. |
+| 5 | **Phase 4 test projects** | ✅ **project-hammer** (Cloudflare Workers + CloudFront) and **project-alexandria** (Node.js MCP server). Both must complete autonomously. |
+| 6 | **Alertmanager** | ✅ **Use Grafana Alerting** (built-in). Add Alertmanager only if PagerDuty/OpsGenie routing needed. |
+| 7 | **Let's Encrypt email** | ✅ **`raj@7ports.ca`** — stored as `CERTBOT_EMAIL` in `.env`. |
+| 8 | **Route53 / `7ports.ca` DNS** | ✅ **Create new Route53 hosted zone via Terraform** (`7ports.ca` has no existing zone). Migrate WordPress on Lightsail apex/www records to new zone before nameserver update at registrar. Nameserver migration is a Phase 0 manual step. |
+| 9 | **WordPress on Lightsail** | ✅ **Preserve WordPress** — add `7ports.ca` (apex) and `www.7ports.ca` A records pointing to Lightsail static IP into the new Route53 zone. Validate WordPress loads before proceeding to Phase 5. |
 
 ---
 
@@ -660,7 +708,7 @@ If any required check fails: returns structured error list to the calling scrum-
 | `monitoring/grafana/provisioning/datasources/loki.yml` | 1 | New file: add Loki datasource |
 | `infrastructure/terraform/main.tf` | 1, 5 | Add :80/:443 security group ingress; add Route53 A record |
 | `infrastructure/terraform/variables.tf` | 5 | Add `enable_dns` toggle variable |
-| `.env.example` | 1 | Add PUSH_BEARER_TOKEN, DOMAIN, LOKI_RETENTION_HOURS |
+| `.env.example` | 1 | Add PUSH_BEARER_TOKEN_<CLIENT_NAME> pattern, DOMAIN, LOKI_RETENTION_HOURS, CERTBOT_EMAIL |
 | `CLAUDE.md` | 1, 3, 4 | Update Active Work, Known Issues, add monitored clients |
 | `docs/architecture.md` | 5 | Update diagrams for full Phase 1-3 stack |
 | `docs/setup.md` | 5 | End-to-end setup instructions |
@@ -682,7 +730,7 @@ If any required check fails: returns structured error list to the calling scrum-
 | `.claude/agents/docs-agent.md` | Phase 2: stub → Phase 4: full instructions |
 | `.claude/agents/scrum-master.md` | Helldiver scrum-master (same role, Helldiver context) |
 | `CLAUDE.md` | Helldiver project context |
-| `.env.example` | SAURON_URL, SAURON_PUSH_TOKEN, GITHUB_TOKEN, TARGET_REPO |
+| `.env.example` | SAURON_URL, SAURON_PUSH_TOKEN (client-specific token generated by Helldiver), GITHUB_TOKEN, TARGET_REPO |
 | `docs/_config.yml` | Jekyll config |
 | `docs/index.md` | Homepage |
 | `docs/agents.md` | Agent team documentation |
