@@ -27,3 +27,8 @@ output "vpc_id" {
   description = "VPC ID"
   value       = aws_vpc.main.id
 }
+
+output "route53_ns_records" {
+  description = "Name server records for 7ports.ca hosted zone. Set these at your domain registrar to activate Route53 DNS management."
+  value       = aws_route53_zone.root.name_servers
+}

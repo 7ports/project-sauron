@@ -96,6 +96,24 @@ resource "aws_security_group" "sauron" {
     description = "Grafana dashboard"
   }
 
+  # HTTP — redirects to HTTPS via Nginx/Caddy reverse proxy
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "HTTP (redirect to HTTPS)"
+  }
+
+  # HTTPS — Grafana UI + push endpoints (e.g. alloy remote_write)
+  ingress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "HTTPS (Grafana + push endpoints)"
+  }
+
   # Prometheus — internal only (not exposed to public internet)
   # Access via SSH tunnel: ssh -L 9090:localhost:9090 ec2-user@<ip>
   egress {
@@ -220,6 +238,50 @@ resource "aws_instance" "sauron" {
   )
 
   tags = { Name = "${var.project_name}-server" }
+}
+
+# ──────────────────────────────────────────────
+# Route53 DNS
+# ──────────────────────────────────────────────
+
+resource "aws_route53_zone" "root" {
+  name    = "7ports.ca"
+  comment = "Managed by Terraform — project-sauron"
+
+  tags = {
+    Project   = var.project_name
+    ManagedBy = "terraform"
+  }
+}
+
+# sauron.7ports.ca → EC2 Elastic IP
+# Toggled off by default — enable only after updating registrar nameservers to Route53 NS records
+resource "aws_route53_record" "sauron" {
+  count   = var.enable_dns ? 1 : 0
+  zone_id = aws_route53_zone.root.zone_id
+  name    = "sauron.${aws_route53_zone.root.name}"
+  type    = "A"
+  ttl     = 300
+  records = [aws_eip.sauron.public_ip]
+}
+
+# 7ports.ca apex → WordPress Lightsail static IP
+# Preserves the existing WordPress site during DNS migration to Route53
+resource "aws_route53_record" "wordpress_apex" {
+  zone_id = aws_route53_zone.root.zone_id
+  name    = aws_route53_zone.root.name
+  type    = "A"
+  ttl     = 300
+  records = [var.wordpress_lightsail_ip]
+}
+
+# www.7ports.ca → WordPress Lightsail static IP
+resource "aws_route53_record" "wordpress_www" {
+  zone_id = aws_route53_zone.root.zone_id
+  name    = "www.${aws_route53_zone.root.name}"
+  type    = "A"
+  ttl     = 300
+  records = [var.wordpress_lightsail_ip]
 }
 
 # ──────────────────────────────────────────────

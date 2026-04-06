@@ -12,3 +12,9 @@ ec2_public_key = "ssh-rsa AAAA... your-email@example.com"
 # Find your IP: curl ifconfig.me
 ssh_allowed_cidrs    = ["YOUR.IP.HERE/32"]
 grafana_allowed_cidrs = ["0.0.0.0/0"]
+
+# Set to true ONLY after updating nameservers at the registrar to Route53 NS records
+enable_dns = false
+
+# Static IP of the WordPress Lightsail instance (AWS Console → Lightsail → Static IPs)
+wordpress_lightsail_ip = "x.x.x.x"

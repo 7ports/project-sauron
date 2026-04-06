@@ -33,3 +33,15 @@ variable "grafana_allowed_cidrs" {
   type        = list(string)
   default     = ["0.0.0.0/0"]
 }
+
+variable "enable_dns" {
+  description = "Set to true to activate the sauron.7ports.ca Route53 A record. Only enable after nameservers at the registrar have been updated to Route53 NS records."
+  type        = bool
+  default     = false
+}
+
+variable "wordpress_lightsail_ip" {
+  description = "Static IP of the WordPress Lightsail instance. Used to preserve the 7ports.ca WordPress site during Route53 nameserver migration. Get from: AWS Console → Lightsail → Static IPs."
+  type        = string
+  default     = ""
+}
