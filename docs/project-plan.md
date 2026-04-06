@@ -10,9 +10,11 @@
 
 This plan covers two complementary projects that together form a personal observability platform and AI-powered onboarding engine.
 
-**Project Sauron** is the hub — a self-hosted Prometheus + Grafana + Loki stack on EC2 t3.small that monitors any number of client projects from a single instance. It exposes a stable public domain (`sauron.7ports.ca`), accepts metrics via Prometheus remote_write push, and accepts logs via Loki's push API from Grafana Alloy agents running on each client.
+**Project Sauron** is an **installable, self-hosted observability platform** — a Prometheus + Grafana + Loki stack on EC2 (Docker Compose + Terraform) that anyone can clone and deploy as their own monitoring hub. The repo is the platform; each deployment is an independent instance. Rajesh's personal instance runs at `sauron.7ports.ca`, but any deployer can point it at their own domain by setting `DOMAIN=yourdomain.com` in their `.env` and `terraform.tfvars`. All instance-specific values (domain, credentials, AWS account, Route53 zone) are gitignored and never committed. A running Sauron instance accepts metrics via Prometheus remote_write and logs via Loki's push API from Grafana Alloy agents running on each client project.
 
-**Project Helldiver** is the onboarding squad — a specialized team of AI agents that analyzes any arbitrary project, determines what to instrument, configures the Sauron hub to receive its telemetry, generates Grafana dashboards, and validates the integration end-to-end. Helldiver inherits Voltron's infrastructure (Docker orchestration, Alexandria integration, reflection pipeline) and adds domain-specific observability agents.
+> **Platform vs. instance:** The `7ports/project-sauron` GitHub repo is the platform. `sauron.7ports.ca` is one instance of it. This is the same model as project-voltron: anyone can install their own instance, configure it for their domain, and deploy it to their own AWS account.
+
+**Project Helldiver** is the onboarding squad — a specialized team of AI agents that analyzes any arbitrary project, determines what to instrument, configures a Sauron hub instance to receive its telemetry, generates Grafana dashboards, and validates the integration end-to-end. Helldiver inherits Voltron's infrastructure (Docker orchestration, Alexandria integration, reflection pipeline) and adds domain-specific observability agents.
 
 ---
 
@@ -592,9 +594,9 @@ If any required check fails: returns structured error list to the calling scrum-
    - Certbot obtains cert for `sauron.7ports.ca` on first `docker compose up`
    - Auto-renewal script validated
 
-3. **Grafana env vars updated**:
-   - `GF_SERVER_ROOT_URL=https://sauron.7ports.ca`
-   - `GF_SERVER_DOMAIN=sauron.7ports.ca`
+3. **Grafana env vars updated** (use `$DOMAIN` from `.env` — not hardcoded):
+   - `GF_SERVER_ROOT_URL=https://${DOMAIN}`
+   - `GF_SERVER_DOMAIN=${DOMAIN}`
 
 4. **`docs/` refresh for project-sauron**:
    - `architecture.md` updated with Phase 1–3 additions (Loki, nginx, Alloy, Pushgateway)
