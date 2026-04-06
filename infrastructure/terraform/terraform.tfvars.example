@@ -1,0 +1,14 @@
+# Copy this file to terraform.tfvars and fill in the values
+# NEVER commit terraform.tfvars to git (it's in .gitignore)
+
+project_name  = "project-sauron"
+aws_region    = "us-east-1"
+instance_type = "t3.small"
+
+# Paste the contents of your public SSH key here
+ec2_public_key = "ssh-rsa AAAA... your-email@example.com"
+
+# Restrict these to your IP for better security
+# Find your IP: curl ifconfig.me
+ssh_allowed_cidrs    = ["YOUR.IP.HERE/32"]
+grafana_allowed_cidrs = ["0.0.0.0/0"]

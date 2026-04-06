@@ -1,0 +1,25 @@
+title: Project Sauron
+description: Comprehensive observability for personal projects — Grafana + Prometheus on AWS
+url: "https://7ports.github.io"
+baseurl: "/project-sauron"
+
+remote_theme: pages-themes/cayman@v0.2.0
+plugins:
+  - jekyll-remote-theme
+  - jekyll-seo-tag
+
+author:
+  name: Rajesh Pujara
+  github: 7ports
+
+github:
+  repository_url: https://github.com/7ports/project-sauron
+
+show_downloads: false
+
+# Navigation
+header_pages:
+  - index.md
+  - architecture.md
+  - setup.md
+  - dashboards.md

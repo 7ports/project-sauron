@@ -1,0 +1,83 @@
+---
+# CloudWatch Exporter Configuration
+# https://github.com/prometheus/cloudwatch_exporter
+
+region: us-east-1
+metrics:
+  # EC2 metrics
+  - aws_namespace: AWS/EC2
+    aws_metric_name: CPUUtilization
+    aws_dimensions:
+      - InstanceId
+    aws_statistics:
+      - Average
+    period_seconds: 60
+    range_seconds: 600
+
+  - aws_namespace: AWS/EC2
+    aws_metric_name: NetworkIn
+    aws_dimensions:
+      - InstanceId
+    aws_statistics:
+      - Sum
+    period_seconds: 60
+    range_seconds: 600
+
+  - aws_namespace: AWS/EC2
+    aws_metric_name: NetworkOut
+    aws_dimensions:
+      - InstanceId
+    aws_statistics:
+      - Sum
+    period_seconds: 60
+    range_seconds: 600
+
+  # Lambda metrics (add function names as needed)
+  - aws_namespace: AWS/Lambda
+    aws_metric_name: Invocations
+    aws_dimensions:
+      - FunctionName
+    aws_statistics:
+      - Sum
+    period_seconds: 60
+    range_seconds: 600
+
+  - aws_namespace: AWS/Lambda
+    aws_metric_name: Errors
+    aws_dimensions:
+      - FunctionName
+    aws_statistics:
+      - Sum
+    period_seconds: 60
+    range_seconds: 600
+
+  - aws_namespace: AWS/Lambda
+    aws_metric_name: Duration
+    aws_dimensions:
+      - FunctionName
+    aws_statistics:
+      - Average
+      - p95
+    period_seconds: 60
+    range_seconds: 600
+
+  # S3 metrics (daily granularity)
+  - aws_namespace: AWS/S3
+    aws_metric_name: BucketSizeBytes
+    aws_dimensions:
+      - BucketName
+      - StorageType
+    aws_statistics:
+      - Average
+    period_seconds: 86400
+    range_seconds: 172800
+
+  - aws_namespace: AWS/S3
+    aws_metric_name: NumberOfObjects
+    aws_dimensions:
+      - BucketName
+      - StorageType
+    aws_statistics:
+      - Average
+    period_seconds: 86400
+    range_seconds: 172800

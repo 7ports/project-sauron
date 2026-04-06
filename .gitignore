@@ -1,0 +1,37 @@
+# Environment secrets — never commit
+.env
+*.env.local
+
+# Terraform state — use remote backend
+infrastructure/terraform/.terraform/
+infrastructure/terraform/*.tfstate
+infrastructure/terraform/*.tfstate.backup
+infrastructure/terraform/*.tfplan
+infrastructure/terraform/.terraform.lock.hcl
+
+# Grafana provisioned data
+monitoring/grafana/data/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# SSH keys
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+
+# Jekyll build output
+docs/_site/
+docs/.jekyll-cache/
+docs/.jekyll-metadata
+
+# Node (for any tooling scripts)
+node_modules/
