@@ -145,24 +145,34 @@ cd monitoring && docker compose up -d
 
 ## Active Work
 
-**Current goal:** Initial scaffold — get the stack running on EC2
+**Current goal:** Phase 3 — Self-monitoring (Alloy) + Phase 4 — Helldiver onboarding
 
 **In progress:**
-- [ ] Provision EC2 via Terraform
-- [ ] Configure monitoring targets (replace placeholder URLs)
-- [ ] Deploy stack to EC2
+- [ ] Configure monitoring targets (replace placeholder URLs in prometheus.yml with real project endpoints)
+- [ ] Phase 3: Self-monitoring — wire Sauron to monitor itself via Grafana Alloy
+- [ ] Phase 4: Helldiver agent implementation — full agent instructions + test onboarding against project-hammer & project-alexandria
 
 **Recently completed:**
 - [x] Repository scaffolded
-- [x] Docker Compose stack defined
+- [x] Docker Compose stack defined (9 containers: Prometheus, Grafana, Loki, nginx, certbot, node-exporter, blackbox-exporter, cloudwatch-exporter, pushgateway)
 - [x] Grafana dashboards provisioned
-- [x] Terraform infrastructure defined
+- [x] Terraform infrastructure defined (EC2 t3.small, VPC, EIP, Route53, IAM)
 - [x] GitHub Pages docs created
-- [x] CI/CD workflows created
+- [x] CI/CD workflows created (deploy to EC2 via SSH, GitHub Pages auto-build)
+- [x] EC2 provisioned via Terraform — 52.6.78.46
+- [x] Route53 hosted zone created for 7ports.ca; nameservers updated at registrar
+- [x] WordPress DNS preserved (7ports.ca → 3.97.39.115 via Route53 A records)
+- [x] sauron.7ports.ca A record live → 52.6.78.46
+- [x] Let's Encrypt TLS cert issued for sauron.7ports.ca (expires 2026-07-05)
+- [x] Full stack deployed on EC2 with HTTPS — https://sauron.7ports.ca ✅
+- [x] GitHub Actions CI/CD pipeline working — deploys on push to main
+- [x] Project Helldiver repo scaffolded at github.com/7ports/project-helldiver
 
 **Known issues / tech debt:**
 - Placeholder target URLs in `monitoring/prometheus/prometheus.yml` — update with real endpoints
 - No alertmanager configured yet — alerts defined but not routed
+- GitHub Actions uses `EC2_USER` secret (value: `ec2-user`) — confirm this secret is set in repo settings
+- AWS CloudWatch exporter has empty credentials (uses EC2 instance profile — verify IAM role is attached)
 
 ---
 
