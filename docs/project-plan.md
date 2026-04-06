@@ -1,13 +1,18 @@
-# Project Plan: Project Sauron — Phase 2 Expansion
+# Project Plan: Project Sauron + Project Helldiver
 
 > **Generated:** 2026-04-06
 > **Status:** Ready for scrum-master decomposition
+> **Supersedes:** Previous single-project scaffold plan
 
 ---
 
 ## Overview
 
-Project Sauron is a self-hosted observability platform running Grafana + Prometheus on a single AWS EC2 `t3.small` instance via Docker Compose. The Phase 1 scaffold (EC2, VPC, Terraform, Docker Compose stack, three generic dashboards, GitHub Actions CI/CD) is complete. Phase 2 expands coverage to four real projects, adds a custom domain with HTTPS, builds per-project dashboards, and delivers a complete alerting suite.
+This plan covers two complementary projects that together form a personal observability platform and AI-powered onboarding engine.
+
+**Project Sauron** is the hub — a self-hosted Prometheus + Grafana + Loki stack on EC2 t3.small that monitors any number of client projects from a single instance. It exposes a stable public domain (`sauron.7ports.ca`), accepts metrics via Prometheus remote_write push, and accepts logs via Loki's push API from Grafana Alloy agents running on each client.
+
+**Project Helldiver** is the onboarding squad — a specialized team of AI agents that analyzes any arbitrary project, determines what to instrument, configures the Sauron hub to receive its telemetry, generates Grafana dashboards, and validates the integration end-to-end. Helldiver inherits Voltron's infrastructure (Docker orchestration, Alexandria integration, reflection pipeline) and adds domain-specific observability agents.
 
 ---
 
@@ -15,830 +20,670 @@ Project Sauron is a self-hosted observability platform running Grafana + Prometh
 
 | Decision | Choice | Rationale | Alternatives Considered |
 |---|---|---|---|
-| Custom domain HTTPS | nginx reverse proxy + Let's Encrypt (Certbot) in Docker | Free, no ALB cost (~$16/mo), standard for single-instance setups, auto-renews certs | HTTP-only (insecure, rejected); AWS ACM + ALB (overkill + cost); Cloudflare proxy (adds external dependency) |
-| Grafana port exposure | nginx on 80/443, Grafana on internal 3000 only | Best practice: don't expose app port directly, terminate TLS at proxy | Direct port 443 on Grafana (Grafana supports TLS natively but cert management is harder) |
-| Route53 DNS | Terraform `aws_route53_record` A record | Existing hosted zone `7ports.ca` in same AWS account; IaC consistency | Manual console entry (not repeatable) |
-| MCP server monitoring (alexandria, voltron) | Blackbox HTTP probe of GitHub Pages only | Both servers run as local stdio processes — no deployed HTTP endpoint exists to probe | Custom heartbeat/push mechanism (too invasive, not warranted for personal projects) |
-| project-voltron Cloudflare Worker monitoring | Blackbox HTTP probe of Worker URL | Worker is a public HTTPS endpoint; simple GET probe confirms availability | None |
-| project-hammer monitoring | Blackbox HTTP for frontend (ferries.yyz.live) + API health endpoint (Fly.io /api/health) | Frontend is S3+CloudFront; backend has explicit `/api/health` on Fly.io | CloudWatch for S3/CloudFront (possible enhancement, not required for MVP) |
-| Alertmanager | Deferred to future phase | No notification channel defined yet; rules exist, routing is not configured | PagerDuty, email SMTP, Slack webhooks |
+| Logging backend | **Loki (monolithic)** | Built-in Grafana datasource (no plugin required), native Alloy integration, same Grafana Labs ecosystem as Prometheus/Grafana. Monolithic mode supports ~20GB/day — far beyond personal project needs. With Docker `mem_limit: 400m`, fits on t3.small. | VictoriaLogs: 50–150MB RAM (better fit), but requires community Grafana plugin, smaller ecosystem. Graylog/OpenSearch: require 4–8GB RAM — non-starter on t3.small. |
+| Log shipping agent | **Grafana Alloy** | Single agent handles both metrics push (remote_write) and log push (Loki). Official successor to Promtail (EOL March 2026) and Grafana Agent (EOL Nov 2025). One Docker service per client instead of two. Built-in `prometheus.exporter.unix` eliminates separate node_exporter for dev machines. | Promtail: EOL — do not use. Fluent Bit: better memory profile but separate agent from metrics, more config overhead. |
+| Metrics push protocol | **Prometheus remote_write** (native receiver) | Hub Prometheus accepts pushes via `--web.enable-remote-write-receiver` (stable since v2.33). No extra infrastructure. Clients scrape themselves locally and push upstream; no inbound firewall rules needed at client. | Federation: requires hub to reach client `/federate` endpoint — breaks for NAT'd dev machines. Mimir/Thanos: multi-tenant, overkill for personal use. |
+| Client connectivity (dev machines) | **Push over HTTPS + Bearer token** | Dev machines are NAT'd — hub cannot scrape inbound. Clients push to `https://sauron.7ports.ca`. Bearer token in Alloy config authenticates the push. Simple, no VPN required. | Tailscale: excellent security but requires installing Tailscale on every dev machine and EC2; adds operational dependency. mTLS: strongest but requires CA management. |
+| TLS + reverse proxy | **nginx + Certbot (Let's Encrypt)** in Docker | Free cert auto-renewal, no ALB cost (~$16/mo). nginx handles: HTTPS termination, redirect :80→:443, proxy to Grafana:3000, auth validation on push endpoints. | AWS ACM + ALB: adds cost and complexity. Direct Grafana TLS: harder cert management, no push endpoint protection. |
+| Push endpoint security | **Bearer token via nginx `auth_request`** | nginx validates `Authorization: Bearer <token>` header before proxying to Prometheus remote_write and Loki push. Token stored as `PUSH_BEARER_TOKEN` secret. Simple, stateless, works from any client. | Basic auth: works but base64-encoded credentials in config files are awkward. IP allowlist: fragile with dynamic IPs. |
+| Loki multi-tenancy | **Single tenant (`auth_enabled: false`)** | All personal projects can share one Loki tenant. Grafana queries with no tenant header. Add `X-Scope-OrgID` via nginx if multi-tenant ever needed. | Multi-tenant mode: adds X-Scope-OrgID header management, no benefit for personal use. |
+| Loki storage | **Local filesystem** | t3.small has 20GB gp3 volume. With 7-day log retention and personal project volumes (<100MB/day), local storage is sufficient. No S3 cost or complexity. | S3: better for production, unnecessary here. |
+| Pushgateway | **Included** | Handles metrics from ephemeral/serverless jobs (Cloudflare Workers, Lambda invocations, cron scripts) that can't be scraped. Standard Prometheus pattern. | Not included: would leave serverless metrics with no path to Sauron. |
+| Distributed tracing | **Deferred** | Tempo/Jaeger add 512MB+ RAM overhead. Personal projects rarely have >2 internal service hops. Revisit if any monitored project spans multiple services with latency budgets. | Tempo (Grafana-native): good fit but memory cost not justified yet. |
+| DNS | **Route53 A record via Terraform** | Existing `7ports.ca` hosted zone in same AWS account. IaC for repeatability. | Manual console: not repeatable. Cloudflare DNS: fine but adds another provider. |
+| Helldiver inheritance model | **Fork Voltron scaffold** | Helldiver inherits Dockerfile.voltron, voltron-run.sh, Alexandria integration, auto-update hook, and reflection pipeline. Agent team is domain-specific (observability) but uses identical orchestration. | Standalone repo with no Voltron infrastructure: loses agent orchestration, Alexandria knowledge, reflection pipeline. |
 
 ---
 
-## Target Architecture
+## project-sauron Architecture
+
+### Hub Component Map
 
 ```
-                         ┌──────────────────────────────────────┐
-                         │         EC2 t3.small (us-east-1)     │
-                         │  ┌──────────────────────────────────┐ │
-Internet ──:80/:443 ────►│  │  nginx (reverse proxy + TLS)     │ │
-(sauron.7ports.ca)       │  └─────────────┬────────────────────┘ │
-                         │                │ :3000 (internal)      │
-                         │  ┌─────────────▼────────────────────┐ │
-                         │  │  Grafana :3000                   │ │
-                         │  └─────────────┬────────────────────┘ │
-                         │                │ queries               │
-                         │  ┌─────────────▼────────────────────┐ │
-                         │  │  Prometheus :9090 (127.0.0.1)    │ │
-                         │  │  ┌──────────────────────────────┐│ │
-                         │  │  │  scrape targets:             ││ │
-                         │  │  │  - node-exporter :9100       ││ │
-                         │  │  │  - blackbox-exporter :9115   ││ │
-                         │  │  │  - cloudwatch-exporter :9106 ││ │
-                         │  │  └──────────────────────────────┘│ │
-                         │  └──────────────────────────────────┘ │
-                         └──────────────────────────────────────┘
-
-Blackbox Exporter probes (outbound from EC2):
-  ┌─ https://7ports.github.io/project-alexandria/
-  ├─ https://7ports.github.io/project-voltron/
-  ├─ https://voltron-chat.<account>.workers.dev  (Cloudflare Worker)
-  ├─ https://ferries.yyz.live                    (project-hammer frontend)
-  └─ https://project-hammer-api.fly.dev/api/health (project-hammer backend)
-
-Route53 (7ports.ca hosted zone):
-  sauron.7ports.ca  A  →  EC2 Elastic IP
+Internet
+  │
+  ├─ :443 (HTTPS) ──► nginx ──────────────────────────────────────────────────────┐
+  │                            │                                                   │
+  │                     auth_request (Bearer token check)                         │
+  │                            │                                                   │
+  │                   ┌────────┼────────────────────────┐                         │
+  │                   ▼        ▼                        ▼                         │
+  │              Grafana    Prometheus              Loki                           │
+  │              :3000      :9090/api/v1/write      :3100/loki/api/v1/push        │
+  │              (proxy)    (remote_write recv)     (log push recv)                │
+  │                   │        │                                                   │
+  │                   │        ├─ scrapes ──► node-exporter :9100                 │
+  │                   │        ├─ scrapes ──► blackbox-exporter :9115             │
+  │                   │        ├─ scrapes ──► cloudwatch-exporter :9106           │
+  │                   │        ├─ scrapes ──► pushgateway :9091                   │
+  │                   │        └─ scrapes ──► prometheus self :9090               │
+  │                   │                                                            │
+  │                   └─ datasources ──► Prometheus + Loki (internal Docker net)  │
+  │                                                                                │
+  └─ :80 (HTTP) ───► nginx (redirect → HTTPS)                                     │
+                                                                                   │
+DNS:  sauron.7ports.ca  A  →  EC2 Elastic IP  (Route53, managed by Terraform)     │
+Security Group: 22 (SSH), 80 (HTTP), 443 (HTTPS) only — all other ports internal  ┘
 ```
 
----
+### Client Telemetry Ingestion Model
 
-## Prometheus Scrape Job Design
+```
+Client Type          Metrics                                    Logs
+──────────────────── ──────────────────────────────────────── ────────────────────────────────────────
+Dev laptop/desktop   Alloy → remote_write → sauron:443/push   Alloy → loki.write → sauron:443/loki
+Production EC2/VPS   Alloy → remote_write → sauron:443/push   Alloy → loki.write → sauron:443/loki
+Fly.io app           Alloy → remote_write → sauron:443/push   Alloy → loki.write → sauron:443/loki
+Cloudflare Worker    Worker → Pushgateway → sauron:443/push   Worker → loki push → sauron:443/loki
+Static S3/CloudFront Blackbox probing (hub probes outbound)   N/A (no server-side logs)
+```
 
-All new targets use the existing `blackbox_http` mechanism with per-project labels for dashboard filtering.
+**Push model rationale:** All real client types are either NAT'd (dev machines) or push-friendly (serverless). Using push from every client simplifies the security model — Sauron exposes one HTTPS+Bearer endpoint, no VPN or per-client firewall rules required.
+
+### Minimal Client Agent Set
+
+Every client project runs **one Docker service** added to its existing `docker-compose.yml`:
 
 ```yaml
-# Proposed new scrape jobs (additions to existing prometheus.yml)
-- job_name: 'blackbox_project_docs'
-  # GitHub Pages docs sites (project-alexandria, project-voltron)
-
-- job_name: 'blackbox_project_hammer'
-  # ferries.yyz.live frontend + /api/health backend
-
-- job_name: 'blackbox_project_voltron_worker'
-  # Cloudflare Worker health probe
-
-- job_name: 'blackbox_tls_project_hammer'
-  # SSL cert expiry for ferries.yyz.live
+# docker-compose.monitoring.yml  (override, not replacing existing compose)
+services:
+  alloy:
+    image: grafana/alloy:latest
+    restart: unless-stopped
+    volumes:
+      - ./monitoring/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/log:/var/log:ro
+    environment:
+      - SAURON_URL=https://sauron.7ports.ca
+      - SAURON_TOKEN=${SAURON_PUSH_TOKEN}
+      - CLIENT_NAME=${CLIENT_NAME}   # e.g. "my-api", "portfolio-site"
+    command: run /etc/alloy/config.alloy
 ```
 
-Each target gets a `project` label via `relabel_configs` to enable per-project dashboard filtering.
+The `config.alloy` file:
+- Discovers and ships log files from `/var/log` and Docker container logs
+- Collects host metrics (CPU, mem, disk, net) via built-in `prometheus.exporter.unix`
+- Tags all metrics and logs with `client=<CLIENT_NAME>` for filtering in Grafana
+- Pushes metrics to `${SAURON_URL}/metrics/push` with Bearer token header
+- Pushes logs to `${SAURON_URL}/loki/api/v1/push` with Bearer token header
+
+### Per-Client Sauron Resources
+
+Each onboarded client gets a dedicated set of files committed to the sauron repo:
+
+| File | Location | Purpose |
+|---|---|---|
+| Prometheus label filter | `prometheus.yml` scrape_configs entry | Accepts `client=<name>` remote_write streams |
+| Alert rules | `prometheus/rules/<client-name>.yml` | Client-specific alert thresholds |
+| Grafana dashboard | `grafana/dashboards/<client-name>.json` | Pre-built panels for that stack |
+| Log stream config | `grafana/provisioning/datasources/loki.yml` | No change needed — Loki datasource is global |
 
 ---
 
-## Grafana Dashboard Design Standards
+## project-helldiver Architecture
 
-Each project dashboard must include:
+### Repo Structure
 
-| Section | Panels |
-|---|---|
-| **Header row** | Stat: current uptime %, last check time, response time |
-| **Availability** | Time series: `probe_success` over time; Stat: 24h/7d uptime % |
-| **Performance** | Time series: `probe_duration_seconds`; threshold lines at 1s/2s |
-| **SSL / TLS** | Stat: days until cert expiry; alert threshold at 30 days |
-| **Project info** | Text panel: description, links to GitHub + docs |
+```
+project-helldiver/
+├── .claude/
+│   ├── agents/
+│   │   ├── recon-agent.md             # Stack fingerprinting
+│   │   ├── instrumentation-engineer.md # Exporter/agent selection
+│   │   ├── sauron-config-writer.md     # Hub-side config generation
+│   │   ├── dashboard-generator.md      # Grafana dashboard JSON
+│   │   ├── client-onboarding-agent.md  # Client-side Alloy config
+│   │   ├── validation-agent.md         # Config syntax + smoke test
+│   │   └── docs-agent.md              # Runbook + CLAUDE.md updates
+│   └── settings.json                  # Voltron auto-update hook (identical to sauron's)
+├── .github/
+│   └── workflows/
+│       └── docs.yml                   # GitHub Pages deploy
+├── docs/                              # GitHub Pages (Jekyll, Cayman theme)
+│   ├── _config.yml
+│   ├── index.md
+│   ├── agents.md                      # Agent team docs
+│   └── onboarding-guide.md
+├── scripts/
+│   └── voltron-run.sh                 # Identical to Voltron's launcher
+├── Dockerfile.voltron                 # Identical to Voltron's
+├── .env.example
+├── CLAUDE.md
+└── README.md
+```
 
-Dashboard JSON files go in `monitoring/grafana/dashboards/` and are provisioned automatically via the existing `dashboard.yml` provisioner config.
+### Voltron Inheritance Model
+
+Helldiver does **not** re-implement agent orchestration — it inherits Voltron's entire runtime:
+
+| Inherited Component | How Inherited | Helldiver Customization |
+|---|---|---|
+| `Dockerfile.voltron` | Copied verbatim | None — same Claude Code agent runtime |
+| `scripts/voltron-run.sh` | Copied verbatim | Mounts Helldiver workspace |
+| `.claude/settings.json` | Copied and updated | `project_name: "project-helldiver"` |
+| Alexandria integration | Via MCP in CLAUDE.md | Helldiver agents call `mcp__alexandria__*` |
+| Reflection pipeline | `submit_reflection` at session end | `project_name: "project-helldiver"` |
+| Scrum-master agent | Defined in `.claude/agents/scrum-master.md` | Helldiver-specific task context |
+
+---
+
+## Helldiver Agent Team
+
+The onboarding workflow is a **linear pipeline with one parallel fork**:
+
+```
+recon-agent
+    │
+    ▼
+instrumentation-engineer
+    │
+    ├──────────────────────────────────┐
+    ▼                                  ▼
+sauron-config-writer          client-onboarding-agent
+    │                                  │
+    ▼                                  │
+dashboard-generator                   │
+    │                                  │
+    └──────────────┬───────────────────┘
+                   ▼
+           validation-agent
+                   │
+                   ▼
+             docs-agent
+```
+
+---
+
+### Agent 1: `recon-agent`
+
+**Role:** Analyze a target project repository and produce a structured fingerprint.
+
+**Inputs:**
+- GitHub repo URL (or local path mounted into Docker)
+- Optional: existing monitoring config paths to avoid duplication
+
+**Process:**
+1. Clone/read the repo
+2. Detect: primary language(s), framework(s), runtime
+3. Detect: deployment target (Docker Compose, Fly.io, plain process, Lambda, Cloudflare Workers)
+4. Detect: existing monitoring (Prometheus scrape endpoint? OpenTelemetry? Existing Alloy/Promtail?)
+5. Scan for: log file locations, Docker service names, exposed ports
+6. Detect: database type (Postgres, Redis, MySQL) for exporter selection
+7. Check if project already has a Sauron dashboard (idempotency guard)
+
+**Output:** `fingerprint.json`
+```json
+{
+  "project_name": "my-api",
+  "repo_url": "https://github.com/7ports/my-api",
+  "language": ["python"],
+  "framework": ["fastapi"],
+  "runtime": "docker-compose",
+  "deploy_target": "fly.io",
+  "databases": ["postgresql", "redis"],
+  "log_paths": ["/var/log/app/*.log"],
+  "existing_metrics_endpoint": "/metrics",
+  "existing_monitoring": false,
+  "already_onboarded": false
+}
+```
+
+**Handoff:** Passes `fingerprint.json` to `instrumentation-engineer`.
+
+---
+
+### Agent 2: `instrumentation-engineer`
+
+**Role:** Map the project fingerprint to a concrete set of exporters, Alloy components, and instrumentation requirements.
+
+**Inputs:** `fingerprint.json`
+
+**Process:**
+1. Consult Alexandria for known exporter patterns for detected stack
+2. Select Prometheus exporters needed (e.g., `postgres_exporter` for Postgres, `redis_exporter` for Redis)
+3. Determine if app exposes `/metrics` natively (FastAPI + prometheus-fastapi-instrumentator pattern)
+4. Select Alloy source components needed (`loki.source.file`, `loki.source.docker`, `prometheus.scrape`)
+5. Determine which metrics labels to add (`client`, `env`, `service`)
+6. Flag any code changes needed (e.g., "add prometheus-fastapi-instrumentator to requirements.txt")
+
+**Output:** `instrumentation-plan.md`
+- Table of exporters to add with their Docker images and config
+- Alloy component list with configuration notes
+- Required environment variables for client `.env`
+- Any code-level instrumentation needed (flagged as optional or required)
+- Loki label strategy for this project's log streams
+
+**Handoff:** Passes to `sauron-config-writer` AND `client-onboarding-agent` (parallel).
+
+---
+
+### Agent 3: `sauron-config-writer`
+
+**Role:** Write all Sauron-side configuration for the new client.
+
+**Inputs:** `fingerprint.json`, `instrumentation-plan.md`
+
+**Process:**
+1. Clone/checkout the `project-sauron` repo (or operate on a local copy)
+2. Write a new Prometheus scrape job section for this client (if app exposes `/metrics`)
+3. Write `monitoring/prometheus/rules/<client-name>.yml` with stack-appropriate alert rules
+4. Update `monitoring/prometheus/prometheus.yml` to include the new rules file
+5. Ensure the Loki datasource covers the new `{client="<name>"}` label (no config change needed — labels are on push)
+6. Stage changes but **do not commit** — validation-agent commits after passing
+
+**Output:** Modified files in the sauron repo:
+- `monitoring/prometheus/prometheus.yml` (updated)
+- `monitoring/prometheus/rules/<client-name>.yml` (new)
+
+**Handoff:** Passes to `dashboard-generator`.
+
+---
+
+### Agent 4: `dashboard-generator`
+
+**Role:** Generate a Grafana dashboard JSON tailored to the detected stack.
+
+**Inputs:** `fingerprint.json`, `instrumentation-plan.md`
+
+**Process:**
+1. Start from the appropriate base template (web-app, API, worker, database-heavy)
+2. Customize panels for detected stack: FastAPI → HTTP request rate/latency/errors; Postgres → query time, connections, cache hit ratio; etc.
+3. Add standard panels present on all client dashboards: log stream panel (Loki), host CPU/mem/disk
+4. Set Grafana variables: `$client` filter, `$interval`
+5. Output valid Grafana dashboard JSON (schema version compatible with Grafana latest)
+
+**Output:** `monitoring/grafana/dashboards/<client-name>.json`
+
+**Handoff:** Passes to `validation-agent`.
+
+---
+
+### Agent 5: `client-onboarding-agent`
+
+**Role:** Generate all client-side files needed to wire the project into Sauron.
+
+**Inputs:** `instrumentation-plan.md`, `fingerprint.json`
+
+**Process:**
+1. Generate `config.alloy` with the components identified by instrumentation-engineer
+2. Generate `docker-compose.monitoring.yml` as a Compose override (adds `alloy` service + any exporters)
+3. Generate `.env.monitoring` with required variables and placeholder values
+4. Generate a `ONBOARDING.md` checklist: steps the project owner takes to activate monitoring
+
+**Output:**
+- `config.alloy` (complete Alloy config for this project)
+- `docker-compose.monitoring.yml` (Compose override)
+- `.env.monitoring.example` (new env vars needed)
+- `ONBOARDING.md` (human-readable activation steps)
+
+**Handoff:** Passes output paths to `validation-agent`.
+
+---
+
+### Agent 6: `validation-agent`
+
+**Role:** Syntactically and semantically validate all generated configurations.
+
+**Inputs:** All files from sauron-config-writer, dashboard-generator, client-onboarding-agent
+
+**Process:**
+1. Run `docker compose -f docker-compose.monitoring.yml config` → validates YAML + interpolation
+2. Run `promtool check config prometheus.yml` (Docker) → validates Prometheus config
+3. Run `promtool check rules <client-name>.yml` → validates alert rule PromQL
+4. Run `alloy fmt config.alloy` → validates Alloy config syntax
+5. Validate Grafana dashboard JSON against known schema (panel types, datasource refs)
+6. Check for placeholder values left unreplaced (e.g., `<CLIENT_NAME>`, `example.com`)
+7. Verify the dashboard references only existing Prometheus/Loki label names
+
+**Output:** `validation-report.md`
+```markdown
+## Validation Report: my-api
+
+| Check | Status | Notes |
+|-------|--------|-------|
+| docker-compose.monitoring.yml syntax | PASS | |
+| prometheus.yml syntax | PASS | |
+| alert rules PromQL | PASS | |
+| alloy config syntax | PASS | |
+| dashboard JSON schema | PASS | |
+| No placeholders remaining | WARN | .env.monitoring.example has 2 unfilled values |
+```
+
+If all required checks pass: commits staged changes to sauron repo, hands off to docs-agent.
+If any required check fails: returns structured error list to the calling scrum-master for human review.
+
+**Handoff:** Passes `validation-report.md` and commit SHA to `docs-agent`.
+
+---
+
+### Agent 7: `docs-agent`
+
+**Role:** Generate human-readable onboarding documentation and update project records.
+
+**Inputs:** `fingerprint.json`, `instrumentation-plan.md`, `validation-report.md`, `ONBOARDING.md`
+
+**Process:**
+1. Generate a `docs/clients/<client-name>.md` page for the Sauron GitHub Pages site
+2. Append a row to the "Monitored Projects" table in Sauron's `docs/index.md`
+3. Update Sauron's `CLAUDE.md` "Active Work" section to record the onboarded client
+4. Submit a Voltron reflection: `submit_reflection` with what was onboarded, what agents ran, any issues encountered
+
+**Output:**
+- `docs/clients/<client-name>.md` (new page in Sauron docs)
+- Updated `docs/index.md`
+- Updated `CLAUDE.md` in sauron repo
+- Voltron reflection submitted
+
+**Handoff:** Pipeline complete. Returns summary to scrum-master.
 
 ---
 
 ## Phase 0: Manual Prerequisites
 
-> **Owner: Human (Rajesh) — no agent involvement**
-> These steps must be completed before any agent work begins.
+**Goal:** Establish the infrastructure and credentials that automated agents cannot create.
 
-### Goal
-All pre-conditions are confirmed and credentials are in place for automated work to proceed.
+**Deliverables:**
+- EC2 instance provisioned via `terraform apply` (using existing `infrastructure/terraform/`)
+- Elastic IP assigned and noted
+- GitHub Actions secrets added: `EC2_HOST`, `EC2_USER`, `EC2_SSH_KEY`, `EC2_PUBLIC_IP`, `GRAFANA_ADMIN_PASSWORD`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`
+- Bearer token generated for push endpoint: `PUSH_BEARER_TOKEN` (added to EC2 `.env` and GitHub secrets)
+- Domain delegation confirmed: `sauron.7ports.ca` will be an A record pointing to EC2 Elastic IP
 
-### Actions Required
+**Agent Assignments:** None — all manual steps by Rajesh.
 
-**AWS / Terraform:**
-- [ ] Run `terraform apply` in `infrastructure/terraform/` to confirm EC2 instance and Elastic IP are provisioned
-- [ ] Note the Elastic IP output (`terraform output elastic_ip`) — needed for DNS and `.env`
-- [ ] Confirm the Route53 hosted zone ID for `7ports.ca` in AWS Console (Hosted Zones → `7ports.ca` → copy Zone ID)
-- [ ] Add `hosted_zone_id` to `terraform.tfvars` (will be needed in Phase 1)
+**Dependencies:** None — first phase.
 
-**EC2 Setup:**
-- [ ] SSH into the EC2 instance: `ssh ec2-user@<ELASTIC_IP>`
-- [ ] Clone repo if not present: `git clone https://github.com/7ports/project-sauron.git /opt/project-sauron`
-- [ ] Copy `.env.example` to `.env` and fill in all values:
-  - `GRAFANA_ADMIN_PASSWORD` — choose a strong password
-  - `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` — IAM user with CloudWatch read
-  - `AWS_REGION=us-east-1`
-  - `EC2_PUBLIC_IP` — the Elastic IP
-
-**GitHub Actions Secrets** (Settings → Secrets → Actions):
-- [ ] `EC2_HOST` — Elastic IP address
-- [ ] `EC2_SSH_KEY` — contents of the EC2 private key (PEM file)
-- [ ] `EC2_USER` — `ec2-user`
-- [ ] `GRAFANA_ADMIN_PASSWORD` — same as `.env`
-
-**project-voltron Cloudflare Worker:**
-- [ ] Find the exact Worker URL: either check the Cloudflare dashboard or run `npx wrangler whoami` / `npx wrangler deployments list` from `docs/` in the project-voltron repo
-- [ ] The URL pattern is `https://voltron-chat.<YOUR_CF_ACCOUNT>.workers.dev`
-- [ ] Record this URL — it goes into `prometheus.yml` as a blackbox target in Phase 2
-
-**project-hammer confirmation:**
-- [ ] Confirm `https://ferries.yyz.live` is live (open in browser)
-- [ ] Confirm backend health check responds: `curl https://project-hammer-api.fly.dev/api/health`
-- [ ] Note the AIS data source URL used by the backend (check Fly.io env or repo config) — optional for monitoring
-
-### Dependencies
-None — this is the entry point.
-
-### Definition of Done
-- EC2 instance is running with Elastic IP assigned
-- `.env` is filled in on the EC2 instance
-- All GitHub Actions secrets are set
-- Cloudflare Worker URL is known
-- ferries.yyz.live and project-hammer-api.fly.dev/api/health both respond
+**Definition of Done:**
+- `terraform output elastic_ip` returns a stable IP
+- SSH to EC2 as `ec2-user` succeeds
+- GitHub Actions secrets are set in the `7ports/project-sauron` repo
 
 ---
 
-## Phase 1: Infrastructure & DNS
+## Phase 1: project-sauron Core Stack Upgrade
 
-> **Owner: devops-engineer agent**
+**Goal:** Add Loki, nginx/TLS, and Prometheus remote_write receiver to the existing Docker Compose stack; the hub is ready to receive telemetry from remote clients.
 
-### Goal
-Serve Grafana at `https://sauron.7ports.ca` with a valid TLS certificate via nginx + Let's Encrypt, managed through Terraform for DNS.
+**Deliverables:**
 
-### Architecture
+1. **`monitoring/docker-compose.yml`** — add services:
+   - `loki` (grafana/loki:latest, monolithic mode, `mem_limit: 400m`, filesystem storage, port 3100 internal only)
+   - `nginx` (nginx:alpine, ports 80 and 443 exposed, replaces direct :3000 Grafana exposure)
+   - `certbot` (certbot/certbot, shares `certbot_certs` volume with nginx for auto-renewal)
+   - `pushgateway` (prom/pushgateway:latest, port 9091 internal only)
+   - Remove direct `3000:3000` port mapping from `grafana` service (nginx proxies it)
 
-```
-Internet → sauron.7ports.ca:80   → nginx (redirect to HTTPS)
-Internet → sauron.7ports.ca:443  → nginx (TLS termination) → Grafana :3000
-```
+2. **`monitoring/loki/loki.yml`** — Loki monolithic config:
+   - `target: all`
+   - `auth_enabled: false`
+   - Filesystem storage under `/loki`
+   - Retention: 7 days (`retention_period: 168h`)
+   - `limits_config.ingestion_rate_mb: 4` (conservative for t3.small)
 
-Nginx runs as a Docker container in the existing `monitoring/docker-compose.yml`. Certbot runs as a companion container that renews certs via a cron-style renewal loop.
+3. **`monitoring/nginx/nginx.conf`** — nginx config:
+   - `:80` → redirect to HTTPS
+   - `:443` with Let's Encrypt certs from `certbot_certs` volume
+   - `/` → proxy to `grafana:3000` (no auth — Grafana has its own login)
+   - `/metrics/push` → validate Bearer token header, proxy to `prometheus:9090/api/v1/write`
+   - `/loki/api/v1/push` → validate Bearer token header, proxy to `loki:3100/loki/api/v1/push`
 
-### Deliverables
+4. **`monitoring/nginx/scripts/certbot-renew.sh`** — renewal cron script (runs `certbot renew` + `nginx -s reload`)
 
-**1. Terraform — Route53 A record (`infrastructure/terraform/main.tf`)**
+5. **`monitoring/prometheus/prometheus.yml`** — add `--web.enable-remote-write-receiver` to Prometheus command args in compose; add scrape jobs for `pushgateway` and `loki` self-metrics
 
-New resource to add:
-```hcl
-variable "route53_zone_id" {
-  description = "Route53 hosted zone ID for 7ports.ca"
-  type        = string
-}
+6. **`monitoring/grafana/provisioning/datasources/loki.yml`** — new Loki datasource pointing to `http://loki:3100`
 
-resource "aws_route53_record" "sauron" {
-  zone_id = var.route53_zone_id
-  name    = "sauron.7ports.ca"
-  type    = "A"
-  ttl     = 300
-  records = [aws_eip.sauron.public_ip]
-}
-```
+7. **`monitoring/grafana/provisioning/grafana.ini`** (or env vars) — update `GF_SERVER_ROOT_URL` to `https://sauron.7ports.ca` (can stay as env var for now, updated in Phase 5)
 
-Add `route53_zone_id` to `terraform.tfvars.example`.
+8. **`infrastructure/terraform/main.tf`** — add security group ingress rules for `:80` and `:443`; add Route53 A record resource (with variable to toggle on/off until Phase 5)
 
-Also add Security Group ingress rules for port 80 and 443:
-```hcl
-ingress {
-  from_port   = 80
-  to_port     = 80
-  protocol    = "tcp"
-  cidr_blocks = ["0.0.0.0/0"]
-  description = "HTTP (nginx, redirects to HTTPS)"
-}
+9. **`.env.example`** — add `PUSH_BEARER_TOKEN`, `LOKI_RETENTION_HOURS`, `DOMAIN` variables
 
-ingress {
-  from_port   = 443
-  to_port     = 443
-  protocol    = "tcp"
-  cidr_blocks = ["0.0.0.0/0"]
-  description = "HTTPS (nginx + Let's Encrypt)"
-}
-```
+**Agent Assignments:** `devops-engineer`
 
-Change existing Grafana ingress rule to restrict to internal-only (remove `0.0.0.0/0` on port 3000, or keep as fallback).
+**Dependencies:** Phase 0 complete (EC2 running, secrets set).
 
-**2. nginx config (`monitoring/nginx/nginx.conf`)**
-
-```nginx
-server {
-    listen 80;
-    server_name sauron.7ports.ca;
-    location /.well-known/acme-challenge/ {
-        root /var/www/certbot;
-    }
-    location / {
-        return 301 https://$host$request_uri;
-    }
-}
-
-server {
-    listen 443 ssl;
-    server_name sauron.7ports.ca;
-    ssl_certificate     /etc/letsencrypt/live/sauron.7ports.ca/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/sauron.7ports.ca/privkey.pem;
-    include /etc/letsencrypt/options-ssl-nginx.conf;
-    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
-
-    location / {
-        proxy_pass http://grafana:3000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-}
-```
-
-**3. Docker Compose additions (`monitoring/docker-compose.yml`)**
-
-Add nginx and certbot services:
-```yaml
-  nginx:
-    image: nginx:alpine
-    container_name: nginx
-    restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
-      - ./certbot/conf:/etc/letsencrypt:ro
-      - ./certbot/www:/var/www/certbot:ro
-    depends_on:
-      - grafana
-    networks:
-      - monitoring
-
-  certbot:
-    image: certbot/certbot
-    container_name: certbot
-    volumes:
-      - ./certbot/conf:/etc/letsencrypt
-      - ./certbot/www:/var/www/certbot
-    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;'"
-```
-
-Update Grafana environment in docker-compose:
-```yaml
-- GF_SERVER_ROOT_URL=https://sauron.7ports.ca
-- GF_SERVER_DOMAIN=sauron.7ports.ca
-```
-
-Change Grafana ports to internal-only:
-```yaml
-    ports:
-      - "127.0.0.1:3000:3000"
-```
-
-**4. Initial cert issuance script (`scripts/init-letsencrypt.sh`)**
-
-One-time script to bootstrap the first certificate before the stack starts (standard Certbot/nginx bootstrap procedure):
-- Generates dummy certs to allow nginx to start
-- Runs `certbot certonly --webroot` to get real cert
-- Reloads nginx
-
-**5. `.env.example` additions**
-```
-DOMAIN=sauron.7ports.ca
-CERTBOT_EMAIL=your-email@example.com
-```
-
-### Agent Assignment
-`devops-engineer`
-
-### Dependencies
-- Phase 0 complete: EC2 running, Elastic IP known, Route53 zone ID known
-- `terraform apply` run after Terraform changes to create the A record
-
-### Key Decisions Needed Before Starting
-- Confirm email address for Let's Encrypt registration (for expiry notifications)
-- Confirm the Route53 zone ID (from Phase 0)
-
-### Definition of Done
-- `terraform plan` shows `aws_route53_record.sauron` to be created
-- `https://sauron.7ports.ca` loads Grafana with valid TLS certificate (no browser warning)
-- HTTP redirects to HTTPS
-- Certificate auto-renewal confirmed (`certbot renew --dry-run` succeeds)
+**Definition of Done:**
+- `docker compose config` exits 0 with no errors
+- `docker compose up -d` starts all 9 services without errors
+- `curl -k https://localhost/` returns Grafana login page
+- `curl -k -H "Authorization: Bearer $PUSH_BEARER_TOKEN" -X POST https://localhost/loki/api/v1/push -H "Content-Type: application/json" -d '{"streams":[{"stream":{"test":"true"},"values":[["'$(date +%s%N)'","hello loki"]]}]}'` returns HTTP 204
+- Prometheus `/targets` shows `loki` and `pushgateway` targets UP
+- Grafana datasource "Loki" shows as Connected
 
 ---
 
-## Phase 2: Project Integrations (Monitoring Targets)
+## Phase 2: project-helldiver Repository Scaffold
 
-> **Owner: devops-engineer agent**
+**Goal:** Create the `7ports/project-helldiver` GitHub repo with complete Voltron-inherited scaffolding and stub agent definitions ready for Phase 4 implementation.
 
-### Goal
-Add Prometheus scrape configs and blackbox probes for all three projects so that uptime, response time, and SSL cert data flows into Prometheus.
+**Deliverables:**
 
-### Monitored Endpoints Per Project
+1. **GitHub repo** `7ports/project-helldiver` created (public)
 
-| Project | Endpoint | Type | Notes |
-|---|---|---|---|
-| **alexandria** | https://7ports.github.io/project-alexandria/ | HTTP + SSL | GitHub Pages docs only — no server process |
-| **voltron** (docs) | https://7ports.github.io/project-voltron/ | HTTP + SSL | GitHub Pages docs |
-| **voltron** (worker) | https://voltron-chat.`<ACCOUNT>`.workers.dev | HTTP | Cloudflare Worker; URL confirmed in Phase 0 |
-| **hammer** (frontend) | https://ferries.yyz.live | HTTP + SSL | S3 + CloudFront |
-| **hammer** (backend) | https://project-hammer-api.fly.dev/api/health | HTTP | Fly.io health endpoint |
+2. **`Dockerfile.voltron`** — identical to `project-sauron/Dockerfile.voltron`
 
-### Deliverables
+3. **`scripts/voltron-run.sh`** — identical to `project-sauron/scripts/voltron-run.sh`
 
-**1. `monitoring/prometheus/prometheus.yml` — new scrape jobs**
+4. **`.claude/settings.json`** — auto-update hook, `project_name: "project-helldiver"`
 
-```yaml
-  # GitHub Pages docs monitoring (alexandria + voltron)
-  - job_name: 'blackbox_docs'
-    metrics_path: /probe
-    params:
-      module: [http_2xx]
-    static_configs:
-      - targets:
-          - https://7ports.github.io/project-alexandria/
-          - https://7ports.github.io/project-voltron/
-    relabel_configs:
-      - source_labels: [__address__]
-        target_label: __param_target
-      - source_labels: [__param_target]
-        target_label: instance
-      - source_labels: [__param_target]
-        regex: 'https://7ports\.github\.io/(project-[^/]+)/.*'
-        target_label: project
-        replacement: '$1'
-      - target_label: __address__
-        replacement: blackbox-exporter:9115
+5. **`.claude/agents/`** — 7 stub agent `.md` files (name, role, placeholder instructions):
+   - `recon-agent.md`
+   - `instrumentation-engineer.md`
+   - `sauron-config-writer.md`
+   - `dashboard-generator.md`
+   - `client-onboarding-agent.md`
+   - `validation-agent.md`
+   - `docs-agent.md`
+   - `scrum-master.md` (same as project-sauron's scrum-master)
 
-  # Cloudflare Worker (project-voltron chat backend)
-  - job_name: 'blackbox_voltron_worker'
-    metrics_path: /probe
-    params:
-      module: [http_2xx_no_body]  # Worker may return 200 on GET /
-    static_configs:
-      - targets:
-          - https://voltron-chat.PLACEHOLDER.workers.dev  # Replace with real URL from Phase 0
-    relabel_configs:
-      - source_labels: [__address__]
-        target_label: __param_target
-      - source_labels: [__param_target]
-        target_label: instance
-      - target_label: project
-        replacement: 'project-voltron'
-      - target_label: __address__
-        replacement: blackbox-exporter:9115
+6. **`CLAUDE.md`** — Helldiver project context: purpose, agent team table, Sauron connection details, Voltron inheritance model, session closeout protocol
 
-  # project-hammer: frontend + backend API health
-  - job_name: 'blackbox_hammer'
-    metrics_path: /probe
-    params:
-      module: [http_2xx]
-    static_configs:
-      - targets:
-          - https://ferries.yyz.live
-          - https://project-hammer-api.fly.dev/api/health
-    relabel_configs:
-      - source_labels: [__address__]
-        target_label: __param_target
-      - source_labels: [__param_target]
-        target_label: instance
-      - target_label: project
-        replacement: 'project-hammer'
-      - target_label: __address__
-        replacement: blackbox-exporter:9115
+7. **`.env.example`** — required variables: `SAURON_URL`, `SAURON_PUSH_TOKEN`, `GITHUB_TOKEN`, `TARGET_REPO`
 
-  # SSL certificate expiry for all custom domains
-  - job_name: 'blackbox_ssl'
-    metrics_path: /probe
-    params:
-      module: [tls_check]
-    static_configs:
-      - targets:
-          - sauron.7ports.ca:443
-          - ferries.yyz.live:443
-          - 7ports.github.io:443
-    relabel_configs:
-      - source_labels: [__address__]
-        target_label: __param_target
-      - source_labels: [__param_target]
-        target_label: instance
-      - target_label: __address__
-        replacement: blackbox-exporter:9115
-```
+8. **`docs/`** — Jekyll GitHub Pages stub: `_config.yml`, `index.md`, `agents.md`, `onboarding-guide.md`
 
-**2. `monitoring/exporters/blackbox.yml` — new module**
+9. **`.github/workflows/docs.yml`** — identical to sauron's docs workflow, pointing at `7ports/project-helldiver`
 
-```yaml
-  # For endpoints that may return non-2xx on GET / but are alive
-  http_2xx_no_body:
-    prober: http
-    timeout: 10s
-    http:
-      valid_http_versions: ["HTTP/1.1", "HTTP/2.0"]
-      valid_status_codes: [200, 204, 301, 302]
-      method: GET
-      follow_redirects: true
-      preferred_ip_protocol: ip4
+10. **`README.md`** — project overview, quick-start, link to GitHub Pages
 
-  # TLS-only check (for SSL cert expiry)
-  tls_check:
-    prober: tcp
-    timeout: 10s
-    tcp:
-      tls: true
-      tls_config:
-        insecure_skip_verify: false
-```
+**Agent Assignments:** `devops-engineer`
 
-**3. `.env.example` — add Cloudflare Worker URL placeholder**
-```
-VOLTRON_WORKER_URL=https://voltron-chat.PLACEHOLDER.workers.dev
-```
+**Dependencies:** Phase 0 (GitHub access, secrets). Phase 1 not required — parallel.
 
-### Agent Assignment
-`devops-engineer`
-
-### Dependencies
-- Phase 0: Cloudflare Worker URL confirmed
-- Phase 1: Stack is deployed (Prometheus reachable to validate configs)
-
-### Key Decisions Needed
-- Cloudflare Worker URL (from Phase 0) — must replace `PLACEHOLDER` before deploying
-- Whether to probe the Worker URL with a GET (may return 4xx if no route defined at `/`) — may need to adjust `valid_status_codes`
-
-### Definition of Done
-- `docker run --rm ... prom/prometheus --check-config` passes on updated `prometheus.yml`
-- All 5 new targets appear at Prometheus `:9090/targets` with state `UP` (or `UNKNOWN` for Cloudflare Worker until URL is confirmed)
-- `probe_success{job=~"blackbox_.*"}` shows `1` for all live endpoints
+**Definition of Done:**
+- `https://github.com/7ports/project-helldiver` is publicly accessible
+- GitHub Pages site deploys successfully at `https://7ports.github.io/project-helldiver`
+- All 7 agent stub files exist under `.claude/agents/`
+- `scripts/voltron-run.sh` runs without error against the repo root
 
 ---
 
-## Phase 3: Custom Grafana Dashboards
+## Phase 3: project-sauron Hub Readiness (Self-Onboarding Demo)
 
-> **Owner: devops-engineer agent**
+**Goal:** Validate the hub end-to-end by onboarding Sauron itself as its first client — Sauron monitors Sauron. This produces the canonical example Alloy config that Helldiver will use as a template.
 
-### Goal
-Replace placeholder/generic dashboards with fully comprehensive, per-project dashboards and a master overview dashboard.
+**Deliverables:**
 
-### Dashboards to Create
+1. **`monitoring/alloy/config.alloy`** — canonical client Alloy config:
+   - `prometheus.exporter.unix` → host metrics collection
+   - `prometheus.scrape` → scrapes all local exporters
+   - `prometheus.remote_write` → pushes to `${SAURON_URL}/metrics/push` with Bearer token
+   - `loki.source.file` targeting `/var/log/*.log` and Docker container logs
+   - `loki.write` → pushes to `${SAURON_URL}/loki/api/v1/push` with Bearer token
+   - `client` and `env` labels applied to all metrics and logs
 
-All files go in `monitoring/grafana/dashboards/` and use UIDs that won't conflict with existing dashboards.
+2. **`monitoring/docker-compose.monitoring.yml`** — canonical Compose override adding the `alloy` service (this file IS the self-monitoring addition AND the template for client projects)
 
----
+3. **`monitoring/prometheus/rules/sauron-self.yml`** — alert rules for Sauron's own health
 
-#### Dashboard 1: `sauron-host.json` — Sauron EC2 Host
+4. **`monitoring/grafana/dashboards/sauron-self.json`** — dashboard showing Sauron's own metrics AND logs side-by-side
 
-| Row | Panels |
-|---|---|
-| **Overview** | Stat: uptime, CPU %, memory %, disk % |
-| **CPU** | Time series: CPU usage by mode (user, system, iowait); Gauge: current % |
-| **Memory** | Time series: used/available/cached; Stat: total RAM |
-| **Disk** | Time series: disk read/write bytes/s; Gauge: disk % used on `/` |
-| **Network** | Time series: bytes in/out per interface |
-| **Prometheus** | Stat: scrape targets UP vs DOWN; Time series: Prometheus memory usage |
+5. **Docs:** `docs/clients/sauron.md` — first entry in the monitored clients section
 
----
+**Agent Assignments:** `devops-engineer` (writes configs), verified by manual smoke test.
 
-#### Dashboard 2: `project-alexandria.json` — Project Alexandria
+**Dependencies:** Phase 1 complete (Loki and nginx running).
 
-| Row | Panels |
-|---|---|
-| **Project Info** | Text: description ("Shared tooling knowledge base MCP server"), links to GitHub + docs |
-| **GitHub Pages Health** | Stat: current probe_success; Time series: uptime over 7d |
-| **Response Time** | Time series: probe_duration_seconds; Gauge: current latency |
-| **SSL Certificate** | Stat: days until cert expiry (GitHub Pages cert); threshold: warning at 30d |
-
-**Note on MCP server:** The MCP server runs as a local stdio process — no HTTP endpoint exists. This dashboard covers what is observable: the documentation site. A text panel explains this architecture.
+**Definition of Done:**
+- Alloy container starts without errors: `docker compose -f docker-compose.yml -f docker-compose.monitoring.yml up alloy`
+- Prometheus `/targets` shows `alloy`-pushed metrics arriving with `client="sauron"` label
+- Grafana Explore → Loki: `{client="sauron"}` returns recent log lines
+- `sauron-self.json` dashboard loads with data in all panels
+- No OOM events on the EC2 instance (check `docker stats`)
 
 ---
 
-#### Dashboard 3: `project-voltron.json` — Project Voltron
+## Phase 4: project-helldiver Agent Implementation
 
-| Row | Panels |
-|---|---|
-| **Project Info** | Text: description ("AI agent templates MCP server + chat widget"), links to GitHub + docs |
-| **GitHub Pages Health** | Stat + Time series: docs site uptime |
-| **Cloudflare Worker Health** | Stat: worker availability; Time series: response time |
-| **Response Times** | Time series: both endpoints side-by-side |
-| **SSL** | Stat: cert expiry for github.io |
+**Goal:** Implement all 7 Helldiver agents with complete, production-quality instructions, then run a live test onboarding against a second real project.
 
----
+**Deliverables:**
 
-#### Dashboard 4: `project-hammer.json` — Project Hammer (Toronto Ferry Tracker)
+1. **Full agent instructions** for all 7 `.claude/agents/*.md` files in `project-helldiver`:
+   - Each agent file contains: role description, mandatory first steps (Alexandria), input/output contract, step-by-step process, handoff instructions, definition of done, error handling
+   - Agents reference the canonical Alloy config from Phase 3 as their template source
 
-| Row | Panels |
-|---|---|
-| **Project Info** | Text: description ("Real-time Toronto Island Ferry tracker"), links to GitHub + live site |
-| **Frontend (ferries.yyz.live)** | Stat: uptime; Time series: probe_success + response time |
-| **Backend API (Fly.io)** | Stat: /api/health availability; Time series: response time |
-| **SSL** | Stat: cert expiry (ferries.yyz.live); threshold at 30d |
-| **Availability Summary** | Stat: 24h uptime %, 7d uptime % for each endpoint |
+2. **Test onboarding run** — Helldiver's scrum-master coordinates agents to onboard a second real project (e.g., a personal API or portfolio site)
 
----
+3. **Generated artifacts committed** to `project-sauron`:
+   - `monitoring/prometheus/rules/<test-client>.yml`
+   - `monitoring/grafana/dashboards/<test-client>.json`
+   - Updated `monitoring/prometheus/prometheus.yml`
 
-#### Dashboard 5: `overview.json` — All Projects Overview (Home Dashboard)
+4. **Client-side artifacts** delivered to the test project repo:
+   - `config.alloy`, `docker-compose.monitoring.yml`, `.env.monitoring.example`, `ONBOARDING.md`
 
-A single-pane-of-glass view across all monitored endpoints.
+5. **Helldiver CLAUDE.md** updated with lessons learned from test run
 
-| Row | Panels |
-|---|---|
-| **Host Health** | Stat row: CPU %, memory %, disk %, node-exporter up |
-| **All Endpoints** | Table: instance, project, probe_success, response time, last check |
-| **Uptime Summary** | Stat: 24h uptime per endpoint (colored: green ≥99%, yellow ≥95%, red <95%) |
-| **SSL Expiry** | Table: domain, days remaining (colored: red <14d, yellow <30d, green ≥30d) |
-| **Response Time Trends** | Time series: all endpoints overlaid |
+**Agent Assignments:** 
+- `scrum-master` (Helldiver) → decomposes and delegates
+- `recon-agent` → fingerprints test project
+- `instrumentation-engineer` → selects exporters
+- `sauron-config-writer` + `client-onboarding-agent` → generate configs in parallel
+- `dashboard-generator` → generates dashboard
+- `validation-agent` → validates everything
+- `docs-agent` → generates docs + submits reflection
 
-Set this as the home dashboard in docker-compose:
-```yaml
-- GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/var/lib/grafana/dashboards/overview.json
-```
+**Dependencies:** Phase 2 complete (Helldiver repo), Phase 3 complete (canonical Alloy template exists).
 
-### Grafana Dashboard JSON Standards
-
-All dashboards must:
-- Set `"schemaVersion": 39` (Grafana latest)
-- Use `"refresh": "1m"` default auto-refresh
-- Set meaningful `"uid"` values (e.g., `"sauron-host"`, `"project-hammer"`)
-- Use `"__inputs"` and `"__requires"` for portability
-- Prometheus datasource referenced as `"${DS_PROMETHEUS}"` via `"templating"` variable
-- Include a `"project"` template variable where applicable for filtering
-
-### Agent Assignment
-`devops-engineer`
-
-### Dependencies
-- Phase 2 complete: all scrape targets are UP so data exists to build panels against
-- Prometheus query patterns validated (metrics actually exist)
-
-### Definition of Done
-- All 5 dashboard JSON files present in `monitoring/grafana/dashboards/`
-- Grafana loads all dashboards without errors after `docker compose up -d` (or config reload)
-- Overview dashboard is set as home dashboard
-- Each dashboard shows real data (not "No data") for at least the current time range
+**Definition of Done:**
+- All 7 agent instructions are complete (not stubs)
+- Test onboarding completes without human intervention (fully autonomous)
+- `validation-agent` report shows all checks PASS
+- Test project's metrics appear in Grafana with correct `client` label
+- Test project's logs appear in Loki Explore with correct stream selector
+- Helldiver reflection submitted to Voltron pipeline
 
 ---
 
-## Phase 4: Alerting Suite
+## Phase 5: Custom Domain and Docs
 
-> **Owner: devops-engineer agent**
+**Goal:** Sauron is accessible at `https://sauron.7ports.ca` with a valid Let's Encrypt certificate, and both projects have polished GitHub Pages documentation.
 
-### Goal
-Deliver a complete set of Prometheus alerting rules covering host health, endpoint uptime, SSL expiry, and per-project availability, organized into per-concern rule files.
+**Deliverables:**
 
-### Rule File Organization
+1. **Route53 A record** via `infrastructure/terraform/main.tf`:
+   - `aws_route53_record.sauron` → `sauron.7ports.ca` → EC2 Elastic IP
+   - Toggle variable `enable_dns = true` added to `variables.tf`
 
-```
-monitoring/prometheus/rules/
-├── host.yml          # EC2 host metrics (replaces/extends existing alerting.yml)
-├── endpoints.yml     # All HTTP endpoint uptime + latency
-├── ssl.yml           # SSL cert expiry for all domains
-└── project-hammer.yml # project-hammer-specific thresholds
-```
+2. **nginx config updated** for `sauron.7ports.ca`:
+   - `server_name sauron.7ports.ca`
+   - Certbot obtains cert for `sauron.7ports.ca` on first `docker compose up`
+   - Auto-renewal script validated
 
-The existing `alerting.yml` is split into focused files. `recording.yml` remains unchanged.
+3. **Grafana env vars updated**:
+   - `GF_SERVER_ROOT_URL=https://sauron.7ports.ca`
+   - `GF_SERVER_DOMAIN=sauron.7ports.ca`
 
----
+4. **`docs/` refresh for project-sauron**:
+   - `architecture.md` updated with Phase 1–3 additions (Loki, nginx, Alloy, Pushgateway)
+   - `setup.md` updated with end-to-end setup steps including Terraform + certbot
+   - `dashboards.md` updated with Loki/log panels
+   - `clients/` directory with one page per onboarded project
 
-### `host.yml` — EC2 Host Alerts
+5. **`docs/` completion for project-helldiver**:
+   - `agents.md` — full description of all 7 agents with data flow diagram
+   - `onboarding-guide.md` — how to run Helldiver against a new project
 
-```yaml
-groups:
-  - name: host
-    interval: 30s
-    rules:
-      - alert: HostDown
-        expr: up{job="node"} == 0
-        for: 1m
-        labels: { severity: critical, team: infra }
-        annotations:
-          summary: "EC2 host unreachable"
-          description: "node-exporter has not reported for > 1 minute"
+**Agent Assignments:** `devops-engineer` (Terraform + nginx), `docs-agent` (documentation refresh)
 
-      - alert: HostHighCPU
-        expr: 100 - (avg by(instance)(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 85
-        for: 5m
-        labels: { severity: warning, team: infra }
-        annotations:
-          summary: "High CPU on {{ $labels.instance }}"
-          description: "CPU at {{ $value | printf \"%.1f\" }}% (threshold: 85%)"
+**Dependencies:** Phase 1 (nginx/TLS stack running), Phase 4 (Helldiver agents complete).
 
-      - alert: HostCriticalCPU
-        expr: 100 - (avg by(instance)(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 95
-        for: 2m
-        labels: { severity: critical, team: infra }
-        annotations:
-          summary: "Critical CPU on {{ $labels.instance }}"
-
-      - alert: HostLowMemory
-        expr: node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes * 100 < 15
-        for: 5m
-        labels: { severity: warning, team: infra }
-        annotations:
-          summary: "Low memory on {{ $labels.instance }}"
-          description: "Only {{ $value | printf \"%.1f\" }}% available"
-
-      - alert: HostCriticalMemory
-        expr: node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes * 100 < 5
-        for: 2m
-        labels: { severity: critical, team: infra }
-        annotations:
-          summary: "Critical memory on {{ $labels.instance }}"
-
-      - alert: HostDiskWarning
-        expr: (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) * 100 < 20
-        for: 5m
-        labels: { severity: warning, team: infra }
-        annotations:
-          summary: "Low disk space on {{ $labels.instance }}"
-          description: "{{ $value | printf \"%.1f\" }}% remaining on /"
-
-      - alert: HostDiskCritical
-        expr: (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) * 100 < 10
-        for: 5m
-        labels: { severity: critical, team: infra }
-        annotations:
-          summary: "Critical disk space on {{ $labels.instance }}"
-
-      - alert: HostHighNetworkErrors
-        expr: rate(node_network_receive_errs_total[5m]) + rate(node_network_transmit_errs_total[5m]) > 10
-        for: 5m
-        labels: { severity: warning, team: infra }
-        annotations:
-          summary: "Network errors on {{ $labels.instance }}"
-
-      - alert: HostReboot
-        expr: node_boot_time_seconds > (time() - 300)
-        labels: { severity: info, team: infra }
-        annotations:
-          summary: "Host {{ $labels.instance }} recently rebooted"
-```
-
----
-
-### `endpoints.yml` — HTTP Endpoint Availability
-
-```yaml
-groups:
-  - name: endpoints
-    interval: 30s
-    rules:
-      - alert: EndpointDown
-        expr: probe_success == 0
-        for: 2m
-        labels:
-          severity: critical
-        annotations:
-          summary: "{{ $labels.instance }} is DOWN"
-          description: "HTTP probe failing for > 2 minutes (job: {{ $labels.job }})"
-
-      - alert: EndpointHighLatency
-        expr: probe_duration_seconds > 3
-        for: 5m
-        labels:
-          severity: warning
-        annotations:
-          summary: "High latency: {{ $labels.instance }}"
-          description: "Response time {{ $value | printf \"%.2f\" }}s (threshold: 3s)"
-
-      - alert: EndpointSlowResponse
-        expr: probe_duration_seconds > 1
-        for: 10m
-        labels:
-          severity: info
-        annotations:
-          summary: "Slow response: {{ $labels.instance }}"
-          description: "Response time {{ $value | printf \"%.2f\" }}s for > 10 minutes"
-
-      - alert: PrometheusTargetDown
-        expr: up == 0
-        for: 5m
-        labels:
-          severity: warning
-        annotations:
-          summary: "Prometheus target {{ $labels.job }}/{{ $labels.instance }} down"
-```
-
----
-
-### `ssl.yml` — SSL Certificate Expiry
-
-```yaml
-groups:
-  - name: ssl
-    interval: 1h
-    rules:
-      - alert: SSLCertExpiringCritical
-        expr: probe_ssl_earliest_cert_expiry - time() < 86400 * 14
-        for: 1h
-        labels:
-          severity: critical
-        annotations:
-          summary: "SSL cert expiring in < 14 days: {{ $labels.instance }}"
-          description: "Certificate expires in {{ $value | humanizeDuration }}"
-
-      - alert: SSLCertExpiringWarning
-        expr: probe_ssl_earliest_cert_expiry - time() < 86400 * 30
-        for: 1h
-        labels:
-          severity: warning
-        annotations:
-          summary: "SSL cert expiring in < 30 days: {{ $labels.instance }}"
-          description: "Certificate expires in {{ $value | humanizeDuration }}"
-
-      - alert: SSLCertExpired
-        expr: probe_ssl_earliest_cert_expiry - time() <= 0
-        labels:
-          severity: critical
-        annotations:
-          summary: "SSL cert EXPIRED: {{ $labels.instance }}"
-```
-
----
-
-### `project-hammer.yml` — Project-Specific Alerts
-
-```yaml
-groups:
-  - name: project-hammer
-    interval: 60s
-    rules:
-      - alert: HammerFrontendDown
-        expr: probe_success{instance="https://ferries.yyz.live"} == 0
-        for: 2m
-        labels:
-          severity: critical
-          project: project-hammer
-        annotations:
-          summary: "Toronto Ferry Tracker frontend is DOWN"
-          description: "ferries.yyz.live has been unreachable for > 2 minutes"
-
-      - alert: HammerAPIDown
-        expr: probe_success{instance="https://project-hammer-api.fly.dev/api/health"} == 0
-        for: 2m
-        labels:
-          severity: critical
-          project: project-hammer
-        annotations:
-          summary: "project-hammer backend API is DOWN"
-          description: "Fly.io health endpoint failing for > 2 minutes"
-
-      - alert: HammerAPIHighLatency
-        expr: probe_duration_seconds{instance="https://project-hammer-api.fly.dev/api/health"} > 2
-        for: 5m
-        labels:
-          severity: warning
-          project: project-hammer
-        annotations:
-          summary: "project-hammer API slow response"
-          description: "API health check taking {{ $value | printf \"%.2f\" }}s"
-```
-
-### Agent Assignment
-`devops-engineer`
-
-### Dependencies
-- Phase 2 complete: scrape jobs and labels exist for alert expressions to match against
-- `recording.yml` reviewed to ensure recording rules don't conflict with new alert names
-
-### Key Decisions Needed
-- Alertmanager routing: no Alertmanager is configured yet. All rules will fire but not route to any notification channel. This is acceptable for now — Alertmanager setup (email/Slack) is a future phase.
-- Confirm whether to delete/supersede the existing `alerting.yml` or keep it alongside the new files
-
-### Definition of Done
-- `docker run --rm ... prom/prometheus --check-config` passes with all 4 rule files
-- Prometheus `:9090/rules` shows all rule groups as `active`
-- Test alert fires correctly: temporarily set a low threshold, confirm it appears in `:9090/alerts`
-- No duplicate rule names across files
+**Definition of Done:**
+- `curl https://sauron.7ports.ca` returns Grafana login page (200 OK, valid TLS cert)
+- `curl http://sauron.7ports.ca` returns 301 redirect to HTTPS
+- `terraform plan` shows no pending changes for DNS
+- Let's Encrypt cert valid for `sauron.7ports.ca`, expiry >60 days out
+- GitHub Pages for both projects build without errors
 
 ---
 
 ## Open Questions
 
-> These require human input before or during implementation.
-
-| # | Question | Required By | Impact |
+| # | Question | Impact | Recommended Default |
 |---|---|---|---|
-| 1 | **Cloudflare Worker URL** — What is the exact URL for `voltron-chat`? Pattern: `https://voltron-chat.<CF_ACCOUNT>.workers.dev` | Phase 2 | Without this, the voltron-worker scrape job cannot be deployed |
-| 2 | **Let's Encrypt email** — What email address should be used for cert registration (receives expiry warnings from LE)? | Phase 1 | Required for `certbot certonly` command |
-| 3 | **Route53 Zone ID** — What is the hosted zone ID for `7ports.ca`? | Phase 1 | Required in `terraform.tfvars` before `terraform apply` |
-| 4 | **Cloudflare Worker probe behavior** — Does `GET /` on the voltron-chat worker return 200, or a non-2xx? | Phase 2 | Determines `valid_status_codes` in blackbox config |
-| 5 | **Alertmanager future** — When should Alertmanager be configured with a notification channel (Slack, email)? | Future phase | Currently all alerts fire silently; routing is deferred |
-| 6 | **project-hammer AIS data source** — Is monitoring the external AIS data source (aisstream.io?) desired? | Phase 2 | Could add an additional blackbox probe for the AIS stream endpoint |
-| 7 | **Grafana port 3000 access** — After nginx+TLS is in place, should port 3000 be removed from the EC2 security group entirely (more secure), or kept as fallback? | Phase 1 | Security posture decision |
+| 1 | **Loki vs VictoriaLogs memory risk:** t3.small has 2GB RAM. With Loki at `mem_limit: 400m` plus Prometheus (~200MB), Grafana (~200MB), nginx (~20MB), exporters (~100MB), total ~920MB — leaves ~1GB headroom. Is that comfortable enough, or should we swap to VictoriaLogs (50–150MB, saves ~300MB) despite requiring a community plugin? | Stack choice for Phase 1 | Proceed with Loki; monitor `docker stats` after Phase 1 deployment and revisit if headroom < 500MB |
+| 2 | **Tailscale vs HTTPS+token for dev machines:** HTTPS+Bearer is simpler but less secure than Tailscale WireGuard mesh. Is installing Tailscale on dev machines acceptable? | Security model | HTTPS+token (simpler, no VPN dependency) |
+| 3 | **Push token strategy:** One shared `PUSH_BEARER_TOKEN` for all clients, or one token per client? Per-client is more secure (revoke one without affecting others) but requires Helldiver to generate and store tokens. | Helldiver complexity | Start with one shared token; upgrade to per-client in a future Helldiver iteration |
+| 4 | **Log retention (7 days):** Is 7-day log retention sufficient, or should it be longer? Loki filesystem storage on 20GB gp3 volume. | Storage planning | 7 days default; Helldiver should document retention in onboarding runbook |
+| 5 | **Second test project for Phase 4:** Which project should Helldiver use as its first real onboarding target? Needs to be a real repo with actual logs and metrics. | Phase 4 scope | Rajesh to nominate a project before Phase 4 begins |
+| 6 | **Alertmanager:** Alert rules are defined but no Alertmanager is configured. Should Phase 1 include Alertmanager with email/PagerDuty, or keep alerts as Grafana alerting? | Notification model | Use Grafana Alerting (built-in, no extra container); add Alertmanager only if PagerDuty/OpsGenie routing is needed |
 
 ---
 
 ## Summary of Changes by File
 
-| File | Action | Phase |
+### project-sauron — New Files
+
+| File | Phase | Description |
 |---|---|---|
-| `infrastructure/terraform/main.tf` | Add `aws_route53_record`, port 80/443 SG rules, `route53_zone_id` variable | 1 |
-| `infrastructure/terraform/variables.tf` | Add `route53_zone_id` variable | 1 |
-| `infrastructure/terraform/terraform.tfvars.example` | Add `route53_zone_id`, `certbot_email` examples | 1 |
-| `monitoring/docker-compose.yml` | Add nginx + certbot services; update Grafana env + port binding | 1 |
-| `monitoring/nginx/nginx.conf` | New file — nginx reverse proxy config | 1 |
-| `scripts/init-letsencrypt.sh` | New file — one-time cert bootstrap script | 1 |
-| `.env.example` | Add `DOMAIN`, `CERTBOT_EMAIL`, `VOLTRON_WORKER_URL` | 1+2 |
-| `monitoring/prometheus/prometheus.yml` | Add 4 new scrape jobs with project labels | 2 |
-| `monitoring/exporters/blackbox.yml` | Add `http_2xx_no_body` and `tls_check` modules | 2 |
-| `monitoring/grafana/dashboards/sauron-host.json` | New dashboard — EC2 host metrics | 3 |
-| `monitoring/grafana/dashboards/project-alexandria.json` | New dashboard — alexandria docs uptime | 3 |
-| `monitoring/grafana/dashboards/project-voltron.json` | New dashboard — voltron docs + worker health | 3 |
-| `monitoring/grafana/dashboards/project-hammer.json` | New dashboard — ferry tracker frontend + API | 3 |
-| `monitoring/grafana/dashboards/overview.json` | New dashboard — all-projects home | 3 |
-| `monitoring/prometheus/rules/host.yml` | New — comprehensive host alerts | 4 |
-| `monitoring/prometheus/rules/endpoints.yml` | New — endpoint uptime + latency alerts | 4 |
-| `monitoring/prometheus/rules/ssl.yml` | New — SSL cert expiry alerts | 4 |
-| `monitoring/prometheus/rules/project-hammer.yml` | New — project-specific alerts | 4 |
-| `monitoring/prometheus/rules/alerting.yml` | Replace with redirect/note pointing to new files | 4 |
+| `monitoring/loki/loki.yml` | 1 | Loki monolithic config |
+| `monitoring/nginx/nginx.conf` | 1 | nginx reverse proxy + TLS + Bearer token auth |
+| `monitoring/nginx/scripts/certbot-renew.sh` | 1 | Let's Encrypt renewal helper |
+| `monitoring/alloy/config.alloy` | 3 | Canonical client Alloy config (template) |
+| `monitoring/docker-compose.monitoring.yml` | 3 | Compose override adding Alloy (client template + self-monitoring) |
+| `monitoring/prometheus/rules/sauron-self.yml` | 3 | Sauron self-monitoring alert rules |
+| `monitoring/grafana/dashboards/sauron-self.json` | 3 | Sauron self-monitoring dashboard |
+| `docs/clients/sauron.md` | 3 | First monitored client page |
+| `docs/clients/<test-client>.md` | 4 | Helldiver-generated client page |
+
+### project-sauron — Modified Files
+
+| File | Phase | Change |
+|---|---|---|
+| `monitoring/docker-compose.yml` | 1 | Add loki, nginx, certbot, pushgateway services; update grafana port mapping |
+| `monitoring/prometheus/prometheus.yml` | 1, 3 | Add `--web.enable-remote-write-receiver`; add pushgateway and loki scrape jobs; add client rules includes |
+| `monitoring/grafana/provisioning/datasources/prometheus.yml` | 1 | No change expected |
+| `monitoring/grafana/provisioning/datasources/loki.yml` | 1 | New file: add Loki datasource |
+| `infrastructure/terraform/main.tf` | 1, 5 | Add :80/:443 security group ingress; add Route53 A record |
+| `infrastructure/terraform/variables.tf` | 5 | Add `enable_dns` toggle variable |
+| `.env.example` | 1 | Add PUSH_BEARER_TOKEN, DOMAIN, LOKI_RETENTION_HOURS |
+| `CLAUDE.md` | 1, 3, 4 | Update Active Work, Known Issues, add monitored clients |
+| `docs/architecture.md` | 5 | Update diagrams for full Phase 1-3 stack |
+| `docs/setup.md` | 5 | End-to-end setup instructions |
+| `docs/dashboards.md` | 5 | Document Loki log panels |
+
+### project-helldiver — All New (Phase 2)
+
+| File | Description |
+|---|---|
+| `Dockerfile.voltron` | Voltron agent runtime (inherited) |
+| `scripts/voltron-run.sh` | Voltron Docker launcher (inherited) |
+| `.claude/settings.json` | Auto-update hook |
+| `.claude/agents/recon-agent.md` | Phase 2: stub → Phase 4: full instructions |
+| `.claude/agents/instrumentation-engineer.md` | Phase 2: stub → Phase 4: full instructions |
+| `.claude/agents/sauron-config-writer.md` | Phase 2: stub → Phase 4: full instructions |
+| `.claude/agents/dashboard-generator.md` | Phase 2: stub → Phase 4: full instructions |
+| `.claude/agents/client-onboarding-agent.md` | Phase 2: stub → Phase 4: full instructions |
+| `.claude/agents/validation-agent.md` | Phase 2: stub → Phase 4: full instructions |
+| `.claude/agents/docs-agent.md` | Phase 2: stub → Phase 4: full instructions |
+| `.claude/agents/scrum-master.md` | Helldiver scrum-master (same role, Helldiver context) |
+| `CLAUDE.md` | Helldiver project context |
+| `.env.example` | SAURON_URL, SAURON_PUSH_TOKEN, GITHUB_TOKEN, TARGET_REPO |
+| `docs/_config.yml` | Jekyll config |
+| `docs/index.md` | Homepage |
+| `docs/agents.md` | Agent team documentation |
+| `docs/onboarding-guide.md` | How to run Helldiver |
+| `.github/workflows/docs.yml` | GitHub Pages deploy |
+| `README.md` | Project overview |
