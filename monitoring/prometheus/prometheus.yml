@@ -72,3 +72,15 @@ scrape_configs:
     static_configs:
       - targets: ['cloudwatch-exporter:9106']
     scrape_interval: 60s  # CloudWatch has a 1-minute resolution
+
+  # Pushgateway — for ephemeral/serverless job metrics
+  - job_name: 'pushgateway'
+    honor_labels: true
+    static_configs:
+      - targets: ['pushgateway:9091']
+
+  # Loki self-metrics
+  - job_name: 'loki'
+    static_configs:
+      - targets: ['loki:3100']
+    metrics_path: /metrics

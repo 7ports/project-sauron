@@ -15,6 +15,7 @@ services:
       - '--storage.tsdb.retention.time=30d'
       - '--web.enable-lifecycle'
       - '--web.enable-admin-api'
+      - '--web.enable-remote-write-receiver'
     networks:
       - monitoring
 
@@ -22,12 +23,11 @@ services:
     image: grafana/grafana:latest
     container_name: grafana
     restart: unless-stopped
-    ports:
-      - "3000:3000"
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
       - GF_USERS_ALLOW_SIGN_UP=false
-      - GF_SERVER_ROOT_URL=http://${EC2_PUBLIC_IP}:3000
+      - GF_SERVER_ROOT_URL=https://${DOMAIN}
+      - GF_SERVER_DOMAIN=${DOMAIN}
       - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/var/lib/grafana/dashboards/api-overview.json
     volumes:
       - grafana_data:/var/lib/grafana
@@ -82,9 +82,65 @@ services:
     networks:
       - monitoring
 
+  loki:
+    image: grafana/loki:latest
+    container_name: loki
+    restart: unless-stopped
+    command: -config.file=/etc/loki/loki.yml -target=all
+    volumes:
+      - ./loki/loki.yml:/etc/loki/loki.yml:ro
+      - loki_data:/loki
+    networks:
+      - monitoring
+    mem_limit: 400m
+    # Port 3100 intentionally NOT exposed to host — nginx proxies it
+
+  nginx:
+    image: nginx:alpine
+    container_name: nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - NGINX_DOMAIN=${DOMAIN}
+      - PUSH_BEARER_TOKEN=${PUSH_BEARER_TOKEN_SAURON}
+    # envsubst substitutes $$NGINX_DOMAIN and $$PUSH_BEARER_TOKEN at startup
+    # before nginx reads the final /etc/nginx/nginx.conf
+    command: /bin/sh -c "envsubst '$$NGINX_DOMAIN $$PUSH_BEARER_TOKEN' < /etc/nginx/nginx.conf.template > /etc/nginx/nginx.conf && nginx -g 'daemon off;'"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf.template:ro
+      - certbot_certs:/etc/letsencrypt:ro
+      - certbot_webroot:/var/www/certbot:ro
+    depends_on:
+      - grafana
+      - prometheus
+      - loki
+    networks:
+      - monitoring
+
+  certbot:
+    image: certbot/certbot
+    container_name: certbot
+    volumes:
+      - certbot_certs:/etc/letsencrypt
+      - certbot_webroot:/var/www/certbot
+    entrypoint: /bin/sh -c "trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot --quiet; sleep 12h & wait $${!}; done"
+
+  pushgateway:
+    image: prom/pushgateway:latest
+    container_name: pushgateway
+    restart: unless-stopped
+    networks:
+      - monitoring
+    # Port 9091 intentionally NOT exposed to host — scraped by Prometheus internally
+
 volumes:
   prometheus_data:
   grafana_data:
+  loki_data:
+  certbot_certs:
+  certbot_webroot:
 
 networks:
   monitoring:
