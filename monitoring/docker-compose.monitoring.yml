@@ -54,8 +54,8 @@ services:
 # Declare the monitoring network as external so this override file does not
 # attempt to create a second network. The main docker-compose.yml creates it
 # under the project name "project-sauron" (the repo root directory name),
-# resulting in the Docker network named "project-sauron_monitoring".
+# resulting in the Docker network named "monitoring_monitoring" (project name = dir name of the compose file = "monitoring").
 networks:
   monitoring:
     external: true
-    name: project-sauron_monitoring
+    name: monitoring_monitoring
