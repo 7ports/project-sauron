@@ -8,7 +8,7 @@
   "links": [],
   "panels": [
     {
-      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "thresholds" },
@@ -44,7 +44,7 @@
       "type": "stat",
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
           "expr": "probe_success{job=\"blackbox_http\", instance=\"https://ferries.yyz.live\"}",
           "legendFormat": "Frontend",
           "refId": "A"
@@ -52,7 +52,7 @@
       ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "thresholds" },
@@ -88,7 +88,7 @@
       "type": "stat",
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
           "expr": "probe_success{job=\"blackbox_http\", instance=\"https://project-hammer-api.fly.dev/api/health\"}",
           "legendFormat": "Backend",
           "refId": "A"
@@ -96,7 +96,7 @@
       ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },
@@ -122,13 +122,13 @@
       "type": "timeseries",
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
           "expr": "probe_duration_seconds{job=\"blackbox_http\", instance=\"https://ferries.yyz.live\"}",
           "legendFormat": "Frontend (ferries.yyz.live)",
           "refId": "A"
         },
         {
-          "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
           "expr": "probe_duration_seconds{job=\"blackbox_http\", instance=\"https://project-hammer-api.fly.dev/api/health\"}",
           "legendFormat": "Backend (/api/health)",
           "refId": "B"
@@ -136,7 +136,7 @@
       ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "thresholds" },
@@ -166,13 +166,13 @@
       "type": "stat",
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
           "expr": "probe_http_status_code{job=\"blackbox_http\", instance=\"https://ferries.yyz.live\"}",
           "legendFormat": "Frontend (ferries.yyz.live)",
           "refId": "A"
         },
         {
-          "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
           "expr": "probe_http_status_code{job=\"blackbox_http\", instance=\"https://project-hammer-api.fly.dev/api/health\"}",
           "legendFormat": "Backend (/api/health)",
           "refId": "B"
