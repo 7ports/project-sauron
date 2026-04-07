@@ -43,6 +43,9 @@ scrape_configs:
           - https://example.com          # Personal site / frontend
           - https://api.example.com      # Backend API
           # ------------------------------------------
+          # project-hammer: Toronto Island Ferry Tracker (onboarded by Helldiver Squadron Alpha)
+          - https://ferries.yyz.live                              # Frontend SPA (S3/CloudFront)
+          - https://project-hammer-api.fly.dev/api/health        # Backend health (Fly.io, yyz)
     relabel_configs:
       - source_labels: [__address__]
         target_label: __param_target

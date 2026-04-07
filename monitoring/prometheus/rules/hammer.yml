@@ -1,0 +1,43 @@
+# Alert rules for project-hammer — Toronto Island Ferry Tracker
+# Onboarded by Helldiver Squadron Alpha (2026-04-07)
+#
+# Monitoring strategy: Blackbox HTTP probing only.
+# No client-side agent — frontend is CDN (S3/CloudFront), backend is Fly.io managed infra.
+#
+# Targets:
+#   - https://ferries.yyz.live                           (frontend SPA)
+#   - https://project-hammer-api.fly.dev/api/health      (backend health endpoint)
+
+groups:
+  - name: hammer_alerts
+    interval: 30s
+    rules:
+      - alert: HammerFrontendDown
+        expr: probe_success{job="blackbox_http", instance="https://ferries.yyz.live"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          client: hammer
+        annotations:
+          summary: "Project Hammer frontend is down"
+          description: "Blackbox HTTP probe for https://ferries.yyz.live has been failing for over 2 minutes."
+
+      - alert: HammerBackendDown
+        expr: probe_success{job="blackbox_http", instance="https://project-hammer-api.fly.dev/api/health"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          client: hammer
+        annotations:
+          summary: "Project Hammer backend API is down"
+          description: "Blackbox HTTP probe for https://project-hammer-api.fly.dev/api/health has been failing for over 2 minutes."
+
+      - alert: HammerHighLatency
+        expr: probe_duration_seconds{job="blackbox_http", instance=~"https://ferries\\.yyz\\.live|https://project-hammer-api\\.fly\\.dev/api/health"} > 3
+        for: 5m
+        labels:
+          severity: warning
+          client: hammer
+        annotations:
+          summary: "High response time on {{ $labels.instance }}"
+          description: "Response time is {{ $value | printf \"%.2f\" }}s (threshold: 3s). Fly.io auto_stop_machines may cause cold starts on the backend."
