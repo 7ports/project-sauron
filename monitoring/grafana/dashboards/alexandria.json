@@ -1,0 +1,188 @@
+{
+  "annotations": { "list": [] },
+  "description": "Project Alexandria — MCP Knowledge Base. Monitored via Sauron (Helldiver Squadron Beta). Hub-side Blackbox HTTP probing of GitHub Pages docs site only — the MCP server itself runs via stdio and has no HTTP interface.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": { "color": "red", "index": 0, "text": "DOWN" },
+                "1": { "color": "green", "index": 1, "text": "UP" }
+              }
+            }
+          ]
+        }
+      },
+      "gridPos": { "h": 4, "w": 8, "x": 0, "y": 0 },
+      "id": 1,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "title": "GitHub Pages Uptime",
+      "type": "stat",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "probe_success{job=\"blackbox_http\", instance=\"https://7ports.github.io/project-alexandria/\"}",
+          "legendFormat": "docs site",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "red", "value": 2 }
+            ]
+          }
+        }
+      },
+      "gridPos": { "h": 4, "w": 8, "x": 8, "y": 0 },
+      "id": 2,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "title": "Avg Response Time",
+      "type": "stat",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "probe_duration_seconds{job=\"blackbox_http\", instance=\"https://7ports.github.io/project-alexandria/\"}",
+          "legendFormat": "response time",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 200 },
+              { "color": "yellow", "value": 301 },
+              { "color": "red", "value": 400 }
+            ]
+          }
+        }
+      },
+      "gridPos": { "h": 4, "w": 8, "x": 16, "y": 0 },
+      "id": 3,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "title": "HTTP Status Code",
+      "type": "stat",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "probe_http_status_code{job=\"blackbox_http\", instance=\"https://7ports.github.io/project-alexandria/\"}",
+          "legendFormat": "status code",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        }
+      },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 4 },
+      "id": 4,
+      "options": {
+        "legend": { "calcs": ["mean", "max", "lastNotNull"], "displayMode": "table", "placement": "bottom" },
+        "tooltip": { "mode": "multi" }
+      },
+      "title": "Response Time History",
+      "type": "timeseries",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "probe_duration_seconds{job=\"blackbox_http\", instance=\"https://7ports.github.io/project-alexandria/\"}",
+          "legendFormat": "docs.7ports.github.io/project-alexandria",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "gridPos": { "h": 5, "w": 24, "x": 0, "y": 12 },
+      "id": 5,
+      "options": {
+        "content": "## About This Dashboard\n\n**Project Alexandria** is a collaboratively maintained knowledge base of tooling setup guides, served via a **stdio MCP server** that runs locally alongside Claude Code.\n\n### Why docs-site probing?\n\nThe Alexandria MCP server (`mcp-server/index.js`) communicates exclusively via **stdio transport** — it exposes no HTTP port, no `/metrics` endpoint, and has no persistent host. It runs as a subprocess of Claude Code and cannot be directly probed by Prometheus or Blackbox Exporter.\n\nThe **GitHub Pages documentation site** (`https://7ports.github.io/project-alexandria/`) is the only publicly reachable HTTP surface of this project. Monitoring it serves as an operational health proxy: if the docs site is down, GitHub Pages infrastructure is degraded and guide updates cannot be published.\n\n### What is monitored\n\n| Signal | Source |\n|---|---|\n| HTTP uptime (UP/DOWN) | Blackbox Exporter → GitHub Pages |\n| Response time | Blackbox Exporter → GitHub Pages |\n| HTTP status code | Blackbox Exporter → GitHub Pages |\n\n### Extending monitoring\n\nIf Alexandria ever gains an HTTP API or web UI, re-run the Helldiver pipeline to add Alloy agent support and additional Blackbox probes.\n\n*Onboarded by Helldiver Squadron Beta · 2026-04-07*",
+        "mode": "markdown"
+      },
+      "title": "About Project Alexandria Monitoring",
+      "type": "text"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "tags": ["helldiver", "alexandria"],
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Project Alexandria — MCP Knowledge Base",
+  "uid": "alexandria-overview",
+  "version": 1,
+  "weekStart": ""
+}

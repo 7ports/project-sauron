@@ -1,0 +1,33 @@
+# Alert rules for project-alexandria — MCP Knowledge Base
+# Onboarded by Helldiver Squadron Beta (2026-04-07)
+#
+# Monitoring strategy: Blackbox HTTP probing (hub-side only).
+# No client-side agent — Alexandria is a stdio MCP server with no HTTP interface.
+# The GitHub Pages docs site is used as the operational health proxy.
+#
+# Target:
+#   - https://7ports.github.io/project-alexandria/   (GitHub Pages docs site)
+
+groups:
+  - name: alexandria_alerts
+    interval: 30s
+    rules:
+      - alert: AlexandriaDocsDown
+        expr: probe_success{job="blackbox_http", instance="https://7ports.github.io/project-alexandria/"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          client: alexandria
+        annotations:
+          summary: "Project Alexandria docs site is down"
+          description: "Blackbox HTTP probe for {{ $labels.instance }} has been failing for over 2 minutes. The MCP knowledge base documentation is unreachable."
+
+      - alert: AlexandriaDocsHighLatency
+        expr: probe_duration_seconds{job="blackbox_http", instance="https://7ports.github.io/project-alexandria/"} > 2
+        for: 5m
+        labels:
+          severity: warning
+          client: alexandria
+        annotations:
+          summary: "Project Alexandria docs site response time > 2s"
+          description: "HTTP probe to {{ $labels.instance }} is taking {{ $value | printf \"%.2f\" }}s (threshold: 2s) for over 5 minutes."

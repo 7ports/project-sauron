@@ -46,6 +46,8 @@ scrape_configs:
           # project-hammer: Toronto Island Ferry Tracker (onboarded by Helldiver Squadron Alpha)
           - https://ferries.yyz.live                              # Frontend SPA (S3/CloudFront)
           - https://project-hammer-api.fly.dev/api/health        # Backend health (Fly.io, yyz)
+          # project-alexandria: MCP Knowledge Base (onboarded by Helldiver Squadron Beta)
+          - https://7ports.github.io/project-alexandria/          # GitHub Pages docs site
     relabel_configs:
       - source_labels: [__address__]
         target_label: __param_target
