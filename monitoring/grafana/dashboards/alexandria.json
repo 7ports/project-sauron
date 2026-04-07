@@ -165,7 +165,158 @@
       ]
     },
     {
-      "gridPos": { "h": 5, "w": 24, "x": 0, "y": 12 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10,
+            "lineInterpolation": "smooth", "showPoints": "never", "spanNulls": false
+          }
+        }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "id": 6,
+      "options": {
+        "legend": { "calcs": ["mean", "max", "lastNotNull"], "displayMode": "table", "placement": "bottom" },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (tool) (rate(mcp_tool_calls_total{client=\"alexandria\"}[5m]))",
+          "legendFormat": "{{ tool }}",
+          "refId": "A"
+        }
+      ],
+      "title": "Tool Call Rate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "color": { "fixedColor": "red", "mode": "fixed" },
+          "custom": {
+            "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10,
+            "lineInterpolation": "smooth", "showPoints": "never", "spanNulls": false
+          }
+        }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "id": 7,
+      "options": {
+        "legend": { "calcs": ["max", "lastNotNull"], "displayMode": "table", "placement": "bottom" },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (tool) (rate(mcp_tool_errors_total{client=\"alexandria\"}[5m]))",
+          "legendFormat": "{{ tool }}",
+          "refId": "A"
+        }
+      ],
+      "title": "Tool Error Rate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line", "lineWidth": 2, "fillOpacity": 5,
+            "lineInterpolation": "smooth", "showPoints": "never", "spanNulls": false
+          }
+        }
+      },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 20 },
+      "id": 8,
+      "options": {
+        "legend": { "calcs": ["mean", "max", "lastNotNull"], "displayMode": "table", "placement": "bottom" },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "mcp_tool_duration_seconds{client=\"alexandria\"}",
+          "legendFormat": "{{ tool }}",
+          "refId": "A"
+        }
+      ],
+      "title": "Tool Duration (last call)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "bars", "lineWidth": 1, "fillOpacity": 80,
+            "lineInterpolation": "linear", "showPoints": "never", "spanNulls": false
+          }
+        }
+      },
+      "gridPos": { "h": 8, "w": 16, "x": 0, "y": 28 },
+      "id": 9,
+      "options": {
+        "legend": { "calcs": ["sum", "lastNotNull"], "displayMode": "table", "placement": "bottom" },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "rate(alexandria_guide_reads_total{client=\"alexandria\"}[5m])",
+          "legendFormat": "{{ guide }}",
+          "refId": "A"
+        }
+      ],
+      "title": "Guide Read Rate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "blue", "value": null }
+            ]
+          },
+          "unit": "short"
+        }
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 28 },
+      "id": 10,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "alexandria_guides_total{client=\"alexandria\"}",
+          "legendFormat": "guides",
+          "refId": "A"
+        }
+      ],
+      "title": "Total Guides",
+      "type": "stat"
+    },
+    {
+      "gridPos": { "h": 5, "w": 24, "x": 0, "y": 36 },
       "id": 5,
       "options": {
         "content": "## About This Dashboard\n\n**Project Alexandria** is a collaboratively maintained MCP knowledge base of tooling setup guides. The MCP server runs via **stdio** — it has no HTTP port and cannot be probed by Prometheus directly.\n\nThe **GitHub Pages docs site** is the only publicly reachable surface of this project and acts as a health proxy for GitHub Pages infrastructure.\n\n| Signal | Target |\n|---|---|\n| Uptime (UP / DOWN) | 7ports.github.io/project-alexandria |\n| Response time | 7ports.github.io/project-alexandria |\n| HTTP status code | 7ports.github.io/project-alexandria |\n\nIf Alexandria gains an HTTP API in future, re-run the Helldiver pipeline to add additional probes.\n\n*Onboarded by Helldiver Squadron Beta*",
@@ -183,6 +334,6 @@
   "timezone": "browser",
   "title": "Project Alexandria — MCP Knowledge Base",
   "uid": "alexandria-overview",
-  "version": 1,
+  "version": 2,
   "weekStart": ""
 }
