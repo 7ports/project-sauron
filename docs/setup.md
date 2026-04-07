@@ -4,153 +4,228 @@ title: Setup Guide
 nav_order: 3
 ---
 
-# Setup Guide
+# Sauron Setup Guide
 
-## Prerequisites
-
-- AWS account with Route53 hosted zone for your domain (or ability to create one via Terraform)
-- AWS CLI configured (SSO or IAM user)
-- Terraform >= 1.6 installed
-- SSH key pair for EC2 access (generate with `ssh-keygen -t rsa -b 4096`)
-- A registered domain with access to update nameservers at your registrar
-- Docker (for local validation)
+> **Claude Code users:** This guide is written so Claude Code can execute it autonomously.
+> If you are an AI agent, read the entire guide before starting, then execute each phase sequentially.
+> Phases 1–2 require manual steps (account access, DNS) that cannot be automated. All other phases
+> can be executed without human intervention once prerequisites are in place.
 
 ---
 
-## Step 1: Clone the Repository
+## Prerequisites
+
+The following must be in place before you begin. These cannot be automated.
+
+| Requirement | Notes |
+|---|---|
+| AWS account with IAM user | Must have: `ec2:*`, `route53:*`, `iam:CreateRole`, `iam:AttachRolePolicy`, `ec2:AssociateIamInstanceProfile` |
+| AWS CLI configured | Run `aws sts get-caller-identity` to verify. SSO or static IAM credentials both work. |
+| Terraform >= 1.6 | `terraform -version` to check |
+| SSH key pair | `ssh-keygen -t rsa -b 4096 -f ~/.ssh/sauron` if you don't have one |
+| Registered domain | You need access to update nameservers at your domain registrar |
+| Docker (local) | For local validation only — `docker --version` to check |
+| Git | `git --version` to check |
+| GitHub account | With the [project-sauron](https://github.com/7ports/project-sauron) repo forked or cloned |
+
+### GitHub Repository Secrets
+
+Set these in **Settings → Secrets and variables → Actions** before Phase 5.
+
+| Secret Name | Value | Description |
+|---|---|---|
+| `EC2_HOST` | Your Elastic IP (from Terraform output) | SSH target for the deploy workflow |
+| `EC2_SSH_KEY` | Contents of your private key (`cat ~/.ssh/sauron`) | Used by `appleboy/ssh-action` |
+| `EC2_USER` | `ec2-user` | Default user for Amazon Linux 2023 |
+
+---
+
+## Phase 1: Infrastructure (Terraform)
+
+### 1.1 — Clone and configure
 
 ```bash
 git clone https://github.com/7ports/project-sauron.git
 cd project-sauron
-```
-
----
-
-## Step 2: Configure Terraform
-
-```bash
 cd infrastructure/terraform
 cp terraform.tfvars.example terraform.tfvars
 ```
 
-Edit `terraform.tfvars`:
+Edit `terraform.tfvars` with your values:
 
-```hcl
-project_name  = "project-sauron"
-aws_region    = "us-east-1"
-instance_type = "t3.small"
+| Variable | Description | Example |
+|---|---|---|
+| `project_name` | Name prefix for all AWS resources | `project-sauron` |
+| `aws_region` | AWS region to deploy into | `us-east-1` |
+| `instance_type` | EC2 instance type | `t3.small` |
+| `ec2_public_key` | Contents of your public SSH key | `ssh-rsa AAAA... your@email.com` |
+| `ssh_allowed_cidrs` | CIDRs allowed to SSH (restrict to your IP) | `["203.0.113.1/32"]` |
+| `grafana_allowed_cidrs` | CIDRs allowed to reach HTTPS (port 443) | `["0.0.0.0/0"]` |
+| `enable_dns` | Whether to create Route53 A records | `false` (set true in Phase 2) |
+| `wordpress_lightsail_ip` | Static IP of existing WordPress site (to preserve DNS) | `3.97.39.115` or `""` |
 
-# Paste contents of your SSH public key (cat ~/.ssh/your-key.pub)
-ec2_public_key = "ssh-rsa AAAA..."
-
-# Your IP only — keep Prometheus and SSH locked down
-ssh_allowed_cidrs     = ["YOUR.IP.HERE/32"]
-grafana_allowed_cidrs = ["0.0.0.0/0"]
-
-# Set AFTER you update nameservers at registrar (see Phase 1 → DNS below)
-enable_dns = false
-
-# Static IP of your WordPress/Lightsail instance if you're preserving DNS records
-wordpress_lightsail_ip = "x.x.x.x"
+Get your current public IP for `ssh_allowed_cidrs`:
+```bash
+curl -s ifconfig.me
 ```
 
----
+### 1.2 — Provision AWS infrastructure
 
-## Step 3: Provision AWS Infrastructure
-
-> **If using AWS SSO**, export credentials first:
+> If using AWS SSO, export credentials first:
 > ```bash
 > eval "$(aws configure export-credentials --format env)"
 > ```
 
 ```bash
-cd infrastructure/terraform
+# Still in infrastructure/terraform/
 terraform init
 terraform plan
 terraform apply
 ```
 
-Note the outputs:
-- `elastic_ip` — your server's public IP
-- `route53_ns_records` — nameservers to set at your domain registrar
-- `ssh_command` — SSH connection command
+Type `yes` when prompted. Apply takes 2–3 minutes.
+
+### 1.3 — Record Terraform outputs
+
+```bash
+terraform output
+```
+
+Note these values — you will need them in later phases:
+
+| Output | What it is |
+|---|---|
+| `elastic_ip` | Your server's public IP (never changes) |
+| `route53_ns_records` | 4 nameservers to set at your domain registrar |
+| `ssh_command` | Pre-built SSH command |
+
+### 1.4 — Verify
+
+```bash
+# SSH into the instance
+$(terraform output -raw ssh_command)
+# Expected: you are now logged into the EC2 instance as ec2-user
+exit
+```
 
 ---
 
-## Phase 1: DNS Setup
+## Phase 2: DNS Configuration
 
-### 1a. Update Nameservers at Registrar
+### 2.1 — Update nameservers at your registrar
 
-Copy the 4 nameservers from `route53_ns_records` output and paste them into your domain registrar's DNS settings. Propagation takes 1–48 hours.
+Copy the 4 nameserver values from `route53_ns_records` and set them at your domain registrar (e.g. Namecheap, Google Domains, GoDaddy). This delegates DNS control to Route53.
 
-Verify propagation:
+> **Important:** If you have an existing WordPress site at `yourdomain.com`, set `wordpress_lightsail_ip`
+> in `terraform.tfvars` before this step. Terraform will create an A record preserving it automatically.
+
+### 2.2 — Wait for propagation
+
+Propagation takes 15 minutes to 48 hours. Check:
+
 ```bash
+# Replace yourdomain.com with your actual domain
 nslookup -type=NS yourdomain.com 8.8.8.8
+# Expected: the 4 Route53 NS records you just set
 ```
 
-### 1b. Enable DNS Records in Terraform
+### 2.3 — Enable DNS records in Terraform
 
-Once nameservers are confirmed propagated, update `terraform.tfvars`:
+Once nameservers are confirmed, update `terraform.tfvars`:
+
 ```hcl
 enable_dns = true
 ```
 
-Then apply:
+Apply:
+
 ```bash
+cd infrastructure/terraform
 terraform apply
 ```
 
 This creates the `sauron.yourdomain.com` A record pointing to your Elastic IP.
 
-Verify:
+### 2.4 — Verify DNS
+
 ```bash
 nslookup sauron.yourdomain.com 8.8.8.8
+# Expected: returns your Elastic IP
 ```
 
 ---
 
-## Step 4: Deploy the Monitoring Stack
+## Phase 3: Initial Server Bootstrap
 
 SSH into the EC2 instance:
 
 ```bash
-ssh -i ~/.ssh/your-key ec2-user@<elastic_ip>
+ssh -i ~/.ssh/sauron ec2-user@<elastic_ip>
 ```
 
-Clone the repo on EC2:
+### 3.1 — Clone the repository
 
 ```bash
 sudo git clone https://github.com/7ports/project-sauron.git /opt/project-sauron
 sudo chown -R ec2-user:ec2-user /opt/project-sauron
+cd /opt/project-sauron
 ```
 
-Set up environment variables:
+### 3.2 — Install Docker
+
+Amazon Linux 2023 needs Docker installed:
 
 ```bash
-cd /opt/project-sauron
+sudo dnf install -y docker
+sudo systemctl enable --now docker
+sudo usermod -aG docker ec2-user
+newgrp docker
+```
+
+Install Docker Compose plugin:
+
+```bash
+sudo mkdir -p /usr/local/lib/docker/cli-plugins
+sudo curl -SL https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64 \
+  -o /usr/local/lib/docker/cli-plugins/docker-compose
+sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+docker compose version
+```
+
+### 3.3 — Create the `.env` file
+
+```bash
 cp .env.example .env
-nano .env
+nano .env  # or vi .env
 ```
 
-Fill in:
+Fill in every value:
+
+| Variable | Description | How to get it |
+|---|---|---|
+| `GRAFANA_ADMIN_PASSWORD` | Grafana admin password | Generate: `openssl rand -base64 18` |
+| `AWS_ACCESS_KEY_ID` | AWS key for CloudWatch exporter | IAM console — or leave blank if using instance profile |
+| `AWS_SECRET_ACCESS_KEY` | AWS secret for CloudWatch exporter | IAM console — or leave blank if using instance profile |
+| `AWS_REGION` | AWS region | `us-east-1` (or your region) |
+| `EC2_PUBLIC_IP` | Server's public IP | From Terraform output `elastic_ip` |
+| `DOMAIN` | Full subdomain for Sauron | `sauron.yourdomain.com` |
+| `CERTBOT_EMAIL` | Email for Let's Encrypt alerts | `you@yourdomain.com` |
+| `PUSH_BEARER_TOKEN_SAURON` | Auth token for Sauron's push endpoint | Generate: `openssl rand -base64 32` |
+| `LOKI_RETENTION_HOURS` | How long to keep logs | `168` (7 days) |
+| `SAURON_METRICS_URL` | Prometheus remote-write endpoint | `https://sauron.yourdomain.com/metrics/push` |
+| `SAURON_LOKI_URL` | Loki push endpoint | `https://sauron.yourdomain.com/loki/api/v1/push` |
+| `CLIENT_NAME` | Label for self-monitoring | `sauron` |
+| `CLIENT_ENV` | Environment label | `production` |
+
+> **Never commit `.env` to git.** It is in `.gitignore`.
+
+### 3.4 — Bootstrap the TLS certificate (first-time only)
+
+This step runs certbot in standalone mode (temporarily binds port 80) before nginx starts.
+Port 80 must be open — the EC2 security group allows it by default.
 
 ```bash
-GRAFANA_ADMIN_PASSWORD=<generate: openssl rand -base64 18>
-DOMAIN=sauron.yourdomain.com
-CERTBOT_EMAIL=you@yourdomain.com
-PUSH_BEARER_TOKEN_SAURON=<generate: openssl rand -base64 32>
-LOKI_RETENTION_HOURS=168
-```
-
----
-
-## Step 5: Bootstrap TLS Certificate (First-Time Only)
-
-Before starting nginx, obtain a Let's Encrypt certificate using certbot standalone (this temporarily binds port 80):
-
-```bash
-cd /opt/project-sauron
-
+# Run from /opt/project-sauron
 docker run --rm -p 80:80 \
   -v monitoring_certbot_certs:/etc/letsencrypt \
   certbot/certbot certonly --standalone \
@@ -159,126 +234,133 @@ docker run --rm -p 80:80 \
   --agree-tos --non-interactive
 ```
 
-> **Note:** Port 80 must be reachable from Let's Encrypt servers. The EC2 security group allows this by default.
+> The volume name `monitoring_certbot_certs` is referenced as external in `docker-compose.yml`.
+> Docker creates it automatically when you run the certbot command above.
 
----
+Verify the certificate was issued:
 
-## Step 6: Start the Full Stack
+```bash
+docker run --rm \
+  -v monitoring_certbot_certs:/etc/letsencrypt:ro \
+  certbot/certbot certificates
+# Expected: Certificate found for sauron.yourdomain.com, VALID, expires in ~90 days
+```
 
-Run all `docker compose` commands from the **project root** (`/opt/project-sauron`), not from the `monitoring/` subdirectory. This ensures the `.env` file at the project root is loaded correctly.
+### 3.5 — Start the stack
+
+Always run `docker compose` from the **project root** (`/opt/project-sauron`), not from `monitoring/`. This ensures `.env` at the project root is loaded.
 
 ```bash
 cd /opt/project-sauron
-docker compose -f monitoring/docker-compose.yml up -d
+
+docker compose \
+  -f monitoring/docker-compose.yml \
+  -f monitoring/docker-compose.monitoring.yml \
+  up -d
 ```
 
-Verify all 9 containers are running:
+Wait 15 seconds, then verify all containers are running:
 
 ```bash
-docker compose -f monitoring/docker-compose.yml ps
+docker compose \
+  -f monitoring/docker-compose.yml \
+  -f monitoring/docker-compose.monitoring.yml \
+  ps
 ```
 
-Expected containers: `prometheus`, `grafana`, `loki`, `node-exporter`, `blackbox-exporter`, `cloudwatch-exporter`, `pushgateway`, `nginx`, `certbot`
+Expected containers (10 total): `prometheus`, `grafana`, `loki`, `node-exporter`, `blackbox-exporter`, `cloudwatch-exporter`, `pushgateway`, `nginx`, `certbot`, `alloy`
 
 ---
 
-## Step 7: Verify HTTPS Access
+## Phase 4: Verify the Stack
 
-```bash
-curl -sI https://sauron.yourdomain.com
-# Expected: HTTP/1.1 302 Found  (Grafana redirects to /login)
+### Checklist
 
-curl -sL -o /dev/null -w "%{http_code}" https://sauron.yourdomain.com/login
-# Expected: 200
-```
+- [ ] **HTTPS loads:** `curl -sI https://sauron.yourdomain.com` returns `HTTP/1.1 302 Found`
+- [ ] **Grafana login works:** `curl -sL -o /dev/null -w "%{http_code}" https://sauron.yourdomain.com/login` returns `200`
+- [ ] **Prometheus targets are UP:** SSH tunnel to `:9090/targets` (see below)
+- [ ] **Loki receiving logs:** Query `{client="sauron"}` in Grafana Explore
 
 Open `https://sauron.yourdomain.com` in your browser.
-
 - Username: `admin`
-- Password: the value of `GRAFANA_ADMIN_PASSWORD` from your `.env`
+- Password: value of `GRAFANA_ADMIN_PASSWORD` from your `.env`
 
 Dashboards are pre-provisioned in the **Project Sauron** folder.
 
----
+### Access Prometheus (internal only)
 
-## Step 8: Configure Monitoring Targets
-
-Edit `monitoring/prometheus/prometheus.yml` and replace placeholder URLs with your real project endpoints:
-
-```yaml
-- targets:
-    - https://your-frontend.com
-    - https://api.your-backend.com
-```
-
-Commit and push — GitHub Actions will deploy automatically. Or reload manually:
+Prometheus is bound to `127.0.0.1:9090` and not exposed publicly. Use an SSH tunnel:
 
 ```bash
-ssh ec2-user@<elastic_ip> "curl -s -X POST http://localhost:9090/-/reload"
+ssh -L 9090:localhost:9090 -i ~/.ssh/sauron ec2-user@<elastic_ip>
 ```
 
----
+Then open `http://localhost:9090/targets` in your browser.
+All targets should show status `UP`.
 
-## Step 9: Set Up GitHub Actions (CI/CD)
-
-Add these secrets to your GitHub repository (`Settings > Secrets and variables > Actions`):
-
-| Secret | Value |
-|---|---|
-| `EC2_HOST` | Your Elastic IP |
-| `EC2_SSH_KEY` | Contents of your private SSH key (`cat ~/.ssh/your-key`) |
-| `EC2_USER` | `ec2-user` |
-
-Future pushes to `main` (touching `monitoring/` or `infrastructure/`) auto-deploy to EC2.
-
----
-
-## Access Prometheus (Internal Only)
-
-Prometheus is not exposed publicly. Use an SSH tunnel:
+### Verify Alloy (self-monitoring) is pushing
 
 ```bash
-ssh -L 9090:localhost:9090 -i ~/.ssh/your-key ec2-user@<elastic_ip>
+# On EC2 — check the client label exists in Prometheus
+curl -s http://localhost:9090/api/v1/label/client/values
+# Expected: {"status":"success","data":["sauron"]}
 ```
 
-Then open `http://localhost:9090`.
+In Grafana → Explore → select Loki datasource → run `{client="sauron"}` → confirm log lines appear.
 
 ---
 
-## Adding New Projects to Monitor
+## Phase 5: GitHub Actions CI/CD
 
-To monitor a new HTTP endpoint via Blackbox Exporter:
+### 5.1 — Set repository secrets
 
-1. Edit `monitoring/prometheus/prometheus.yml` — add the URL to the `blackbox_http` targets list
-2. Push to `main` (auto-deploys) or reload manually:
-   ```bash
-   curl -s -X POST http://localhost:9090/-/reload
-   ```
-3. The endpoint appears automatically in the **Web Traffic & Uptime** dashboard.
+In GitHub → **Settings → Secrets and variables → Actions → New repository secret**:
 
-To push metrics from an application via Prometheus remote_write:
+| Secret | Value | Where to get it |
+|---|---|---|
+| `EC2_HOST` | Your Elastic IP | `terraform output elastic_ip` |
+| `EC2_SSH_KEY` | Private key contents | `cat ~/.ssh/sauron` |
+| `EC2_USER` | `ec2-user` | Hardcoded for Amazon Linux 2023 |
 
-```yaml
-# In your app's prometheus.yml or alloy config
-remote_write:
-  - url: https://sauron.yourdomain.com/metrics/push
-    authorization:
-      type: Bearer
-      credentials: <PUSH_BEARER_TOKEN_SAURON value>
+### 5.2 — Trigger a manual deploy
+
+```bash
+# From your local machine
+gh workflow run deploy.yml --repo 7ports/project-sauron
 ```
+
+Or push any change to a file under `monitoring/` or `infrastructure/`:
+
+```bash
+echo "# trigger" >> monitoring/prometheus/prometheus.yml
+git add monitoring/prometheus/prometheus.yml
+git commit -m "chore: trigger first CI deploy"
+git push origin main
+```
+
+### 5.3 — Verify the deploy succeeded
+
+```bash
+gh run list --workflow=deploy.yml --limit=3
+```
+
+Expected: most recent run shows `✓ completed — success`.
 
 ---
 
 ## Certificate Renewal
 
-Certbot renewal runs automatically inside the `certbot` container (checks every 12 hours).
+The `certbot` container checks for renewal every 12 hours automatically.
 
 To force a manual renewal:
 
 ```bash
 ssh ec2-user@<elastic_ip>
 cd /opt/project-sauron
-docker compose -f monitoring/docker-compose.yml exec certbot certbot renew --webroot -w /var/www/certbot
+
+docker compose -f monitoring/docker-compose.yml exec certbot \
+  certbot renew --webroot -w /var/www/certbot
+
 docker compose -f monitoring/docker-compose.yml exec nginx nginx -s reload
 ```
 
@@ -287,9 +369,42 @@ docker compose -f monitoring/docker-compose.yml exec nginx nginx -s reload
 ## Updating the Stack
 
 ```bash
-# On the EC2 instance (or via GitHub Actions push):
+# Push to main — GitHub Actions deploys automatically.
+# Or manually on EC2:
 cd /opt/project-sauron
 git pull
-docker compose -f monitoring/docker-compose.yml pull
-docker compose -f monitoring/docker-compose.yml up -d
+docker compose \
+  -f monitoring/docker-compose.yml \
+  -f monitoring/docker-compose.monitoring.yml \
+  pull
+docker compose \
+  -f monitoring/docker-compose.yml \
+  -f monitoring/docker-compose.monitoring.yml \
+  up -d
 ```
+
+---
+
+## Adding New Projects to Monitor
+
+To monitor an HTTP endpoint via Blackbox Exporter:
+
+1. Edit `monitoring/prometheus/prometheus.yml` — add the URL to the `blackbox_http` targets list
+2. Push to `main` (auto-deploys via GitHub Actions)
+
+To onboard a full project (custom dashboard, alert rules, Alloy agent), use the [Helldiver pipeline](helldiver.md).
+
+---
+
+## Troubleshooting
+
+| Symptom | Diagnosis | Fix |
+|---|---|---|
+| `nginx -s reload` fails in deploy | nginx container not running | `docker compose up -d nginx` first |
+| Grafana datasource shows red / UID mismatch | Dashboard JSON references wrong datasource UID | In Grafana → Connections → Data sources → Prometheus — copy the UID and update dashboard JSON `uid` fields to match |
+| `.env` variables not loaded | `docker compose` run from wrong directory | Always run from `/opt/project-sauron`, not from `monitoring/` |
+| SSH timeout from GitHub Actions | Security group missing inbound rule on port 22 | Add `0.0.0.0/0` → port 22 to the EC2 security group (or restrict to GitHub Actions IP ranges) |
+| certbot fails: port 80 already in use | nginx running before certbot bootstrap | Stop nginx: `docker compose stop nginx` then re-run certbot command |
+| Prometheus target `DOWN` for node-exporter | Container not on `monitoring` network | `docker network inspect monitoring_monitoring` — ensure `node-exporter` is listed |
+| Alloy container exits immediately | Missing env var in `.env` | Check `docker logs alloy` — look for `env(): variable not found` |
+| Push returns `401 Unauthorized` | Bearer token mismatch | Verify `PUSH_BEARER_TOKEN_SAURON` in `.env` matches the token nginx validates. Restart nginx after `.env` change: `docker compose restart nginx` |
