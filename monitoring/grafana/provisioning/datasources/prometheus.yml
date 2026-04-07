@@ -1,5 +1,13 @@
 apiVersion: 1
 
+# Force-delete any stale auto-generated datasource (created before uid was set).
+# This ensures only one "Prometheus" datasource exists with uid: prometheus.
+# Safe to keep: on every Grafana start, the datasource is deleted then re-added
+# from the datasources list below with the correct uid.
+deleteDatasources:
+  - name: Prometheus
+    orgId: 1
+
 datasources:
   - name: Prometheus
     uid: prometheus

@@ -1,5 +1,11 @@
 apiVersion: 1
 
+# Force-delete any stale auto-generated datasource (created before uid was set).
+# This ensures only one "Loki" datasource exists with uid: loki.
+deleteDatasources:
+  - name: Loki
+    orgId: 1
+
 datasources:
   - name: Loki
     uid: loki

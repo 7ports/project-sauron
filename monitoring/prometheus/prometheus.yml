@@ -32,17 +32,12 @@ scrape_configs:
         replacement: 'sauron-ec2'
 
   # HTTP endpoint probing — frontend web traffic & API uptime
-  # Add your real frontend and API URLs below
   - job_name: 'blackbox_http'
     metrics_path: /probe
     params:
       module: [http_2xx]
     static_configs:
       - targets:
-          # --- Replace with your real project URLs ---
-          - https://example.com          # Personal site / frontend
-          - https://api.example.com      # Backend API
-          # ------------------------------------------
           # project-hammer: Toronto Island Ferry Tracker (onboarded by Helldiver Squadron Alpha)
           - https://ferries.yyz.live                              # Frontend SPA (S3/CloudFront)
           - https://project-hammer-api.fly.dev/api/health        # Backend health (Fly.io, yyz)
