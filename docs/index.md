@@ -54,6 +54,7 @@ Project Sauron is a self-hosted observability platform that provides comprehensi
 - [Setup Guide](setup.md)
 - [Architecture Details](architecture.md)
 - [Dashboards](dashboards.md)
+- [Helldiver — Onboarding Projects](helldiver.md)
 
 ---
 
