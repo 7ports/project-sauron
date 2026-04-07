@@ -50,4 +50,12 @@ jobs:
             echo "Reloading Prometheus config..."
             curl -s -X POST http://localhost:9090/-/reload || echo "Prometheus reload failed (may not be running yet)"
 
+            echo "Reloading nginx config..."
+            # docker compose up -d does not restart nginx when only the volume-mounted
+            # nginx.conf.template changes. nginx -s reload tells the running nginx worker
+            # to re-read its /etc/nginx/nginx.conf (the envsubst-generated file).
+            # NOTE: to pick up changes to nginx.conf.template itself, the nginx container
+            # must be restarted (envsubst runs at startup). Use --force-recreate=nginx if needed.
+            docker compose -f monitoring/docker-compose.yml -f monitoring/docker-compose.monitoring.yml exec -T nginx nginx -s reload || echo "nginx reload skipped (container may not be running)"
+
             echo "Deployment complete."
