@@ -50,6 +50,13 @@ jobs:
             echo "Reloading Prometheus config..."
             curl -s -X POST http://localhost:9090/-/reload || echo "Prometheus reload failed (may not be running yet)"
 
+            echo "Restarting Grafana to re-read provisioning files..."
+            # Grafana reads datasource and dashboard provisioning ONLY at startup.
+            # docker compose up -d does NOT restart containers when only bind-mounted
+            # files change. Force a restart so Grafana picks up any datasource UID
+            # changes, deleteDatasources directives, or new dashboard provider paths.
+            docker compose -f monitoring/docker-compose.yml -f monitoring/docker-compose.monitoring.yml restart grafana || echo "Grafana restart skipped"
+
             echo "Reloading nginx config..."
             # docker compose up -d does not restart nginx when only the volume-mounted
             # nginx.conf.template changes. nginx -s reload tells the running nginx worker
