@@ -65,4 +65,7 @@ jobs:
             # must be restarted (envsubst runs at startup). Use --force-recreate=nginx if needed.
             docker compose -f monitoring/docker-compose.yml -f monitoring/docker-compose.monitoring.yml exec -T nginx nginx -s reload || echo "nginx reload skipped (container may not be running)"
 
+            echo "Running post-deploy health check..."
+            bash /opt/project-sauron/scripts/verify-stack.sh || echo "WARNING: Health check reported failures above"
+
             echo "Deployment complete."
