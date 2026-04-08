@@ -115,12 +115,13 @@ check_nginx() {
 # ---------------------------------------------------------------------------
 check_pushgateway() {
   local label="pushgateway"
-  local http_code
-  http_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 http://localhost:9091/metrics 2>/dev/null) || true
-  if [[ "$http_code" == "200" ]]; then
-    pass "$label" "HTTP $http_code"
+  # Port 9091 is intentionally NOT exposed to the host (see docker-compose.yml).
+  # Check via docker exec instead of curl localhost.
+  if docker compose $COMPOSE_FILES exec -T pushgateway \
+       wget -q -O /dev/null http://localhost:9091/-/healthy 2>/dev/null; then
+    pass "$label" "healthy (via docker exec)"
   else
-    fail "$label" "HTTP $http_code (expected 200)"
+    fail "$label" "not responsive (docker exec wget http://localhost:9091/-/healthy)"
   fi
 }
 
